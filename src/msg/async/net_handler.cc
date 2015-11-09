@@ -132,6 +132,26 @@ int NetHandler::generic_connect(const entity_addr_t& addr, bool nonblock)
   return s;
 }
 
+/* Try to reconnect the socket.
+ *
+ * @return    0         success
+ *            > 0       just break, and wait for event
+ *            < 0       need to goto fail
+ */
+int NetHandler::reconnect(const entity_addr_t &addr, int sd)
+{
+  int ret = ::connect(sd, (sockaddr*)&addr.addr, addr.addr_size());
+
+  if (ret < 0 && errno != EISCONN) {
+    ldout(cct, 10) << __func__ << " reconnect: " << strerror(errno) << dendl;
+    if (errno == EINPROGRESS || errno == EALREADY)
+      return 1;
+    return -errno;
+  }
+
+  return 0;
+}
+
 int NetHandler::connect(const entity_addr_t &addr)
 {
   return generic_connect(addr, false);
