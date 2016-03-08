@@ -224,7 +224,7 @@ void EventCenter::delete_file_event(int fd, int mask)
 
 uint64_t EventCenter::create_time_event(uint64_t microseconds, EventCallbackRef ctxt)
 {
-  Mutex::Locker l(time_lock);
+  assert(in_thread());
   uint64_t id = time_event_next_id++;
 
   ldout(cct, 10) << __func__ << " id=" << id << " trigger after " << microseconds << "us"<< dendl;
@@ -255,7 +255,7 @@ uint64_t EventCenter::create_time_event(uint64_t microseconds, EventCallbackRef 
 // TODO: Ineffective implementation now!
 void EventCenter::delete_time_event(uint64_t id)
 {
-  Mutex::Locker l(time_lock);
+  assert(in_thread());
   ldout(cct, 10) << __func__ << " id=" << id << dendl;
   if (id >= time_event_next_id)
     return ;
@@ -294,7 +294,6 @@ int EventCenter::process_time_events()
   utime_t cur = ceph_clock_now(cct);
   ldout(cct, 10) << __func__ << " cur time is " << cur << dendl;
 
-  time_lock.Lock();
   /* If the system clock is moved to the future, and then set back to the
    * right value, time events may be delayed in a random way. Often this
    * means that scheduled operations will not be performed soon enough.
@@ -326,7 +325,6 @@ int EventCenter::process_time_events()
       break;
     }
   }
-  time_lock.Unlock();
 
   for (list<TimeEvent>::iterator it = need_process.begin();
        it != need_process.end(); ++it) {
@@ -361,7 +359,6 @@ int EventCenter::process_events(int timeout_microseconds)
     }
     shortest.set_from_timeval(&tv);
 
-    Mutex::Locker l(time_lock);
     map<utime_t, list<TimeEvent> >::iterator it = time_events.begin();
     if (it != time_events.end() && shortest >= it->first) {
       ldout(cct, 10) << __func__ << " shortest is " << shortest << " it->first is " << it->first << dendl;
