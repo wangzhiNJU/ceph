@@ -265,7 +265,6 @@ void RDMAConnectedSocketImpl::post_work_request(vector<Chunk*> tx_buffers) {
 }
 
 void RDMAConnectedSocketImpl::fin() {
-  ldout(cct, 20) << __func__ << " active finish." << dendl;
   ibv_sge list = {};
   ibv_send_wr wr;
   wr.wr_id = reinterpret_cast<uint64_t>(this);

@@ -211,6 +211,7 @@ AsyncConnection::~AsyncConnection()
 // else return < 0 means error
 ssize_t AsyncConnection::_try_send(bool send, bool more)
 {
+  ldout(async_msgr->cct, 20) << __func__ << " try send " << dendl;//wangzhi
   if (!send || !outcoming_bl.length())
     return 0;
 
@@ -975,6 +976,7 @@ ssize_t AsyncConnection::_process_connection()
         }
         ldout(async_msgr->cct, 20) << __func__ <<  " connect read peer addr "
                              << paddr << " on socket " << cs.fd() << dendl;
+        ldout(async_msgr->cct, 20) << __func__ << " connect peer addr for me is " << peer_addr_for_me << dendl;//wangzhi
         if (peer_addr != paddr) {
           if (paddr.is_blank_ip() && peer_addr.get_port() == paddr.get_port() &&
               peer_addr.get_nonce() == paddr.get_nonce()) {
@@ -1876,6 +1878,7 @@ void AsyncConnection::accept(ConnectedSocket socket, entity_addr_t &addr)
 
   Mutex::Locker l(lock);
   cs = std::move(socket);
+  cs.set_worker(worker);
   socket_addr = addr;
   state = STATE_ACCEPTING;
   // rescheduler connection in order to avoid lock dep
@@ -1947,6 +1950,7 @@ int AsyncConnection::send_message(Message *m)
     ldout(async_msgr->cct, 15) << __func__ << " inline write is denied, reschedule m=" << m << dendl;
     center->dispatch_event_external(write_handler);
   }
+  ldout(async_msgr->cct, 1) << " wangzhi, send message down! " << dendl;
   return 0;
 }
 

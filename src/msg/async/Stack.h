@@ -23,7 +23,9 @@
 #include "common/perf_counters.h"
 #include "msg/msg_types.h"
 #include "msg/async/Event.h"
+#include "common/Cond.h"
 
+class Worker;//wangzhi
 class ConnectedSocketImpl {
  public:
   virtual ~ConnectedSocketImpl() {}
@@ -34,6 +36,7 @@ class ConnectedSocketImpl {
   virtual void shutdown() = 0;
   virtual void close() = 0;
   virtual int fd() const = 0;
+  virtual void set_worker(Worker* w) {}//wangzhi
 };
 
 class ConnectedSocket;
@@ -56,7 +59,6 @@ class ServerSocketImpl {
 
 /// \addtogroup networking-module
 /// @{
-
 /// A TCP (or other stream-based protocol) connection.
 ///
 /// A \c ConnectedSocket represents a full-duplex stream between
@@ -82,6 +84,10 @@ class ConnectedSocket {
 
   int is_connected() {
     return _csi->is_connected();
+  }
+
+  void set_worker(Worker* w) {//wangzhi
+    _csi->set_worker(w);  
   }
   /// Read the input stream with copy.
   ///

@@ -167,7 +167,7 @@ again:
     }
   }
 
-  if (n)
+  if (n == MAX_COMPLETIONS)
     goto again;
 
   /*if (!rearmed) {

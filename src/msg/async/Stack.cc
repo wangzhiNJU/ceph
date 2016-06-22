@@ -13,12 +13,13 @@
  * Foundation.  See file COPYING.
  *
  */
-
 #include "PosixStack.h"
+//wangzhi begin
+#include "msg/async/rdma/RDMAStack.h"
+//wangzhi end
 #ifdef HAVE_DPDK
 #include "msg/async/dpdk/DPDKStack.h"
 #endif
-
 #include "common/errno.h"
 #include "common/dout.h"
 #include "include/assert.h"
@@ -35,6 +36,8 @@ std::shared_ptr<NetworkStack> NetworkStack::create(CephContext *c, const string 
   else if (t == "dpdk")
     return std::shared_ptr<NetworkStack>(new DPDKStack(c, t));
 #endif
+  else if (t == "rdma")
+    return std::shared_ptr<NetworkStack>(new RDMAStack(c, t));
 
   return nullptr;
 }
@@ -43,8 +46,10 @@ Worker* NetworkStack::create_worker(CephContext *c, const string &type, unsigned
 {
   if (type == "posix")
     return new PosixWorker(c, i);
-  else if (type == "dpdk")
-    return new DPDKWorker(c, i);
+  //else if (type == "dpdk")
+    //return new DPDKWorker(c, i);
+  else if (type == "rdma")
+    return new RDMAWorker(c, i);
   return nullptr;
 }
 
