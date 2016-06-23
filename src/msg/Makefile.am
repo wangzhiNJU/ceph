@@ -9,13 +9,7 @@ noinst_HEADERS += \
 	msg/Message.h \
 	msg/Messenger.h \
 	msg/SimplePolicyMessenger.h \
-	msg/msg_types.h \
-	msg/async/Infiniband.h \
-	msg/async/MemoryManager.h \
-	msg/async/RDMAConnectedSocketImpl.h \
-	msg/async/RDMAServerSocketImpl.h \
-	msg/async/RDMAStack.h \
-	msg/async/ResourceManager.h
+	msg/msg_types.h
 
 libmsg_la_SOURCES += \
 	msg/simple/Accepter.cc \
@@ -27,11 +21,7 @@ libmsg_la_SOURCES += \
 	msg/async/AsyncMessenger.cc \
 	msg/async/Event.cc \
 	msg/async/net_handler.cc \
-	msg/async/EventSelect.cc \
-	msg/async/Infiniband.cc \
-	msg/async/RDMAConnectedSocketImpl.cc \
-	msg/async/RDMAServerSocketImpl.cc \
-	msg/async/RDMAStack.cc
+	msg/async/EventSelect.cc
 
 if LINUX
 libmsg_la_SOURCES += msg/async/EventEpoll.cc

@@ -274,13 +274,13 @@ void RDMAConnectedSocketImpl::post_work_request(vector<Chunk*> tx_buffers) {
 }
 
 void RDMAConnectedSocketImpl::fin() {
-  ibv_sge list;
-  memset(&list, 0, sizeof(list));
+  //ibv_sge list;
+  //memset(&list, 0, sizeof(list));
   ibv_send_wr wr;
   memset(&wr, 0, sizeof(wr));
   wr.wr_id = reinterpret_cast<uint64_t>(this);
   wr.num_sge = 0;
-  wr.sg_list = &list;
+  //wr.sg_list = &list;
   wr.opcode = IBV_WR_SEND;
   wr.send_flags = IBV_SEND_SIGNALED;
   ibv_send_wr* bad_tx_work_request;

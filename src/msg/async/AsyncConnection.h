@@ -17,6 +17,7 @@
 #ifndef CEPH_MSG_ASYNCCONNECTION_H
 #define CEPH_MSG_ASYNCCONNECTION_H
 
+#include <atomic>
 #include <pthread.h>
 #include <signal.h>
 #include <climits>
@@ -47,17 +48,35 @@ static const int ASYNC_IOV_MAX = (IOV_MAX >= 1024 ? IOV_MAX / 4 : IOV_MAX);
  */
 class AsyncConnection : public Connection {
   ssize_t do_sendmsg(struct msghdr &msg, unsigned len, bool more);
-  ssize_t try_send(bufferlist &bl, bool send=true, bool more=false) {
+  ssize_t try_send(bufferlist &bl, bool more=false) {
     Mutex::Locker l(write_lock);
     outcoming_bl.claim_append(bl);
-    return _try_send(send, more);
+    return _try_send(more);
   }
   // if "send" is false, it will only append bl to send buffer
   // the main usage is avoid error happen outside messenger threads
-  ssize_t _try_send(bool send=true, bool more=false);
+  ssize_t _try_send(bool more=false);
   ssize_t _send(Message *m);
   void prepare_send_message(uint64_t features, Message *m, bufferlist &bl);
-  ssize_t read_until(unsigned needed, char *p);
+  ssize_t _zero_read_until(unsigned needed, char *p);
+  ssize_t _copy_read_until(unsigned needed, char *p);
+  // Because this func will be called multi times to populate
+  // the needed buffer, so the passed in bufferptr must be the same.
+  // Normally, only "read_message" will pass existing bufferptr in
+  //
+  // And it will uses readahead method to reduce small read overhead,
+  // "recv_buf" is used to store read buffer
+  //
+  // return the remaining bytes, 0 means this buffer is finished
+  // else return < 0 means error
+  inline ssize_t read_until(unsigned needed, char *p) {
+    if (zero_copy)
+      return _zero_read_until(needed, p);
+    else
+      return _copy_read_until(needed, p);
+  }
+  template<bool ZeroCopy>
+  ssize_t read_data(unsigned needed, bufferlist &bl);
   ssize_t _process_connection();
   void _connect();
   void _stop();
@@ -72,8 +91,9 @@ class AsyncConnection : public Connection {
   void handle_ack(uint64_t seq);
   void _send_keepalive_or_ack(bool ack=false, utime_t *t=NULL);
   ssize_t write_message(Message *m, bufferlist& bl, bool more);
-  ssize_t _reply_accept(char tag, const ceph_msg_connect &connect, ceph_msg_connect_reply &reply,
-                        bufferlist &authorizer_reply) {
+  void inject_delay();
+  ssize_t _reply_accept(char tag, ceph_msg_connect &connect, ceph_msg_connect_reply &reply,
+                    bufferlist &authorizer_reply) {
     bufferlist reply_bl;
     reply.tag = tag;
     reply.features = ((uint64_t)connect.features & policy.features_supported) | policy.features_required;
@@ -83,8 +103,10 @@ class AsyncConnection : public Connection {
       reply_bl.append(authorizer_reply.c_str(), authorizer_reply.length());
     }
     ssize_t r = try_send(reply_bl);
-    if (r < 0)
+    if (r < 0) {
+      inject_delay();
       return -1;
+    }
 
     state = STATE_ACCEPTING_WAIT_CONNECT_MSG;
     return 0;
@@ -115,15 +137,56 @@ class AsyncConnection : public Connection {
     return !out_q.empty();
   }
 
+   /**
+   * The DelayedDelivery is for injecting delays into Message delivery off
+   * the socket. It is only enabled if delays are requested, and if they
+   * are then it pulls Messages off the DelayQueue and puts them into the
+   * AsyncMessenger event queue.
+   */
+  class DelayedDelivery : public EventCallback {
+    std::set<uint64_t> register_time_events; // need to delete it if stop
+    std::deque<std::pair<utime_t, Message*> > delay_queue;
+    Mutex delay_lock;
+    AsyncMessenger *msgr;
+    EventCenter *center;
+
+   public:
+    explicit DelayedDelivery(AsyncMessenger *omsgr, EventCenter *c)
+      : delay_lock("AsyncConnection::DelayedDelivery::delay_lock"),
+        msgr(omsgr), center(c) { }
+    ~DelayedDelivery() {
+      assert(register_time_events.empty());
+      assert(delay_queue.empty());
+    }
+    void do_request(int id) override;
+    void queue(double delay_period, utime_t release, Message *m) {
+      Mutex::Locker l(delay_lock);
+      delay_queue.push_back(std::make_pair(release, m));
+      register_time_events.insert(center->create_time_event(delay_period*1000000, this));
+    }
+    void discard() {
+      Mutex::Locker l(delay_lock);
+      while (!delay_queue.empty()) {
+        Message *m = delay_queue.front().second;
+        m->put();
+        delay_queue.pop_front();
+      }
+      for (auto i : register_time_events)
+        center->delete_time_event(i);
+      register_time_events.clear();
+    }
+    void flush();
+  } *delay_state;
+
  public:
-  AsyncConnection(CephContext *cct, AsyncMessenger *m, Worker *w, bool local);
+  AsyncConnection(CephContext *cct, AsyncMessenger *m, Worker *w);
   ~AsyncConnection();
+  void maybe_start_delay_thread();
 
   ostream& _conn_prefix(std::ostream *_dout);
 
   bool is_connected() override {
-    Mutex::Locker l(lock);
-    return state >= STATE_OPEN && state <= STATE_OPEN_TAG_CLOSE;
+    return can_write.load() == WriteStatus::CANWRITE;
   }
 
   // Only call when AsyncConnection first construct
@@ -181,7 +244,6 @@ class AsyncConnection : public Connection {
     STATE_WAIT,       // just wait for racing connection
   };
 
-  static const int TCP_PREFETCH_MIN_SIZE;
   static const char *get_state_name(int state) {
       const char* const statenames[] = {"STATE_NONE",
                                         "STATE_OPEN",
@@ -232,13 +294,15 @@ class AsyncConnection : public Connection {
   int port;
   Messenger::Policy policy;
   bool local_stack;
+  bool zero_copy;
 
   Mutex write_lock;
-  enum {
+  enum class WriteStatus {
     NOWRITE,
     CANWRITE,
     CLOSED
-  } can_write;
+  };
+  std::atomic<WriteStatus> can_write;
   bool open_write;
   map<int, list<pair<bufferlist, Message*> > > out_q;  // priority queue for outbound msgs
   list<Message*> sent; // the first bufferlist need to inject seq
@@ -257,10 +321,13 @@ class AsyncConnection : public Connection {
   EventCallbackRef wakeup_handler;
   EventCallbackRef cleanup_handler;
   struct iovec msgvec[ASYNC_IOV_MAX];
+  // used by ZeroCopy == false
   char *recv_buf;
-  uint32_t recv_max_prefetch;
-  uint32_t recv_start;
-  uint32_t recv_end;
+  unsigned recv_max_prefetch;
+  // used by ZeroCopy == true
+  bufferptr recv_ptr;
+  unsigned recv_start;
+  unsigned recv_end;
   set<uint64_t> register_time_events; // need to delete it if stop
 
   // Tis section are temp variables used by state transition
@@ -294,10 +361,19 @@ class AsyncConnection : public Connection {
   // used only for local state, it will be overwrite when state transition
   char *state_buffer;
   // used only by "read_until"
-  uint64_t state_offset;
+  unsigned state_offset;
   EventCenter *center;
   ceph::shared_ptr<AuthSessionHandler> session_security;
 
+  // perf developer zone
+#ifdef CEPH_PERF_DEV
+  uint64_t rx_count = 0;
+  uint64_t rx_cycles = 0;
+  uint64_t tx_prepare_count = 0;
+  uint64_t tx_prepare_cycles = 0;
+  uint64_t tx_send_count = 0;
+  uint64_t tx_send_cycles = 0;
+#endif
  public:
   // used by eventcallback
   void handle_write();
@@ -332,6 +408,10 @@ class AsyncConnection : public Connection {
     delete connect_handler;
     delete local_deliver_handler;
     delete wakeup_handler;
+    if (delay_state) {
+      delete delay_state;
+      delay_state = NULL;
+    }
     cleanup_handler = nullptr;
   }
   PerfCounters *get_perf_counter() {

@@ -45,6 +45,7 @@
 
 #include "include/utime.h"
 #include "include/unordered_map.h"
+#include "common/ceph_time.h"
 #include "common/dout.h"
 #include "net_handler.h"
 
@@ -84,12 +85,20 @@ class EventDriver {
   virtual bool wakeup_support() { return true; }
 };
 
+extern thread_local EventCenter* local_center;
+
+inline EventCenter* center() {
+    return local_center;
+}
 
 /*
  * EventCenter maintain a set of file descriptor and handle registered events.
  */
 class EventCenter {
+  using clock_type = ceph::coarse_mono_clock;
   thread_local static unsigned local_id;
+  // should be enough;
+  static EventCenter *centers[24];
 
   struct FileEvent {
     int mask;
@@ -150,14 +159,14 @@ class EventCenter {
   deque<EventCallbackRef> external_events;
   vector<FileEvent> file_events;
   EventDriver *driver;
-  map<utime_t, list<TimeEvent> > time_events;
+  map<clock_type::time_point, list<TimeEvent> > time_events;
   // Keeps track of all of the pollers currently defined.  We don't
   // use an intrusive list here because it isn't reentrant: we need
   // to add/remove elements while the center is traversing the list.
   std::vector<Poller*> pollers;
   uint64_t time_event_next_id;
-  time_t last_time; // last time process time event
-  utime_t next_time; // next wake up time
+  clock_type::time_point last_time; // last time process time event
+  clock_type::time_point next_time; // next wake up time
   int notify_receive_fd;
   int notify_send_fd;
   NetHandler net;
@@ -180,7 +189,7 @@ class EventCenter {
     notify_receive_fd(-1), notify_send_fd(-1), net(c),
     notify_handler(NULL),
     already_wakeup(0) {
-    last_time = time(NULL);
+    last_time = clock_type::now();
   }
   ~EventCenter();
   ostream& _event_prefix(std::ostream *_dout);
@@ -204,7 +213,7 @@ class EventCenter {
   // Used by external thread
   void dispatch_event_external(EventCallbackRef e);
   inline bool in_thread() const {
-    return local_id == id;
+    return local_center == this;
   }
  private:
   template <typename func>
@@ -233,21 +242,21 @@ class EventCenter {
   };
  public:
   template <typename func>
-  void submit_event(func &&f, bool nowait = false) {
-    if (in_thread()) {
+  static void submit_to(int i, func &&f, bool nowait = false) {
+    EventCenter *c = centers[i];
+    if (c->in_thread()) {
       f();
       return ;
     }
     if (nowait) {
       C_submit_event<func> *event = new C_submit_event<func>(std::move(f), true);
-      dispatch_event_external(event);
+      c->dispatch_event_external(event);
     } else {
       C_submit_event<func> event(std::move(f), false);
-      dispatch_event_external(&event);
+      c->dispatch_event_external(&event);
       event.wait();
     }
   };
 };
-
 
 #endif
