@@ -193,7 +193,6 @@ ssize_t RDMAConnectedSocketImpl::send(bufferlist &bl, bool more) {
     bytes += it->length();
     ++it;
   }
-  //  ldout(cct, 20) << __func__ << " gonna send " << bytes << " bytes." << dendl;
 
   vector<Chunk*> tx_buffers = infiniband->get_tx_buffers(bytes);
   ldout(cct, 20) << __func__ << " tx buffer count: " << tx_buffers.size() << dendl;

@@ -296,8 +296,6 @@ class Infiniband {
             size_t read(char* buf, size_t len) {
               size_t left = bound - offset;
               if(left >= len) {
-                //    CephContext* cct = Infiniband::get_infiniband()->cct;
-                //   lderr(cct) << __func__ << " go to read:" << len << ", offset: " << offset << cpp_strerror(errno) << dendl;
                 memcpy(buf, buffer+offset, len);
                 offset += len;
                 return len;
@@ -312,8 +310,6 @@ class Infiniband {
 
             size_t write(char* buf, size_t len) {
               size_t left = bytes - offset;
-              // CephContext* cct = Infiniband::get_infiniband()->cct;
-              //    lderr(cct) << __func__ << " go to send:" << len << ", left: " << left << cpp_strerror(errno) << dendl;
               if(left >= len) {
                 memcpy(buffer+offset, buf, len);
                 offset += len;
@@ -546,8 +542,7 @@ class Infiniband {
     int close();
 
     //for debug
-    static long send_msg_counter;
-    static long read_msg_counter;
+    static long post_recv_counter;
 };
 
 #endif

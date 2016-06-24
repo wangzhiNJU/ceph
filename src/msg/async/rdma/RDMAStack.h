@@ -128,7 +128,7 @@ class RDMAConnectedSocketImpl : public ConnectedSocketImpl {
     rx_cq = NULL;
     if(!wait_close)
       worker->remove_to_delete(this);
-    lderr(cct) << __func__ << dendl;
+    lderr(cct) << __func__ << " chunk: " << Infiniband::post_recv_counter  << dendl;
   }
   int activate();
   ssize_t read_buffers(char* buf, size_t len);
