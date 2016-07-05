@@ -1,4 +1,5 @@
 #include "RDMAStack.h"
+#include "common/deleter.h"
 
 #define dout_subsys ceph_subsys_ms
 #undef dout_prefix
@@ -82,19 +83,37 @@ int RDMAConnectedSocketImpl::activate() {
   connected = 1;//indicate successfully
   return 0;
 }
+int RDMAConnectedSocketImpl::get_cq_entries(ibv_wc* wc, int MAX_COMPLETIONS) {
+  got_event = rx_cc->get_cq_event();
+  int max_try_times = 3000;
+  if(!got_event)
+    max_try_times >>= 2;
+
+  tried = 0;
+  int n = 0;
+  rearmed = false;
+again:
+  ++tried;
+  n += rx_cq->poll_cq(MAX_COMPLETIONS, wc);
+  if(n) {
+    ldout(cct, 20) << __func__ << " got " << n << " cqe." << " tried: " << tried << " id: " << read_counter << dendl;
+    rearmed = true;
+  }
+  if(n == 0 && tried < max_try_times)
+    goto again;
+  if (n == MAX_COMPLETIONS)
+    goto again;
+
+  return n;
+}
 
 ssize_t RDMAConnectedSocketImpl::read(char* buf, size_t len) {
   ldout(cct, 20) << __func__  << " buffers size: " << buffers.size() << " read_counter: " << ++read_counter << " csi" << my_seq  << dendl;
   ssize_t read = 0;
 
+  ldout(cct, 20) << __func__ << " need to read bytes: " << len  << dendl;
   struct timeval start,end;
   gettimeofday(&start,NULL);
-  ldout(cct, 20) << __func__ << " need to read bytes: " << len  << dendl;
-  bool got_event = rx_cc->get_cq_event();
-  bool rearmed = false;
-  int max_try_times = 3000;
-  if(!got_event)
-    max_try_times >>= 2;
 
   if(!buffers.empty()) 
     read = read_buffers(buf,len);
@@ -103,14 +122,7 @@ ssize_t RDMAConnectedSocketImpl::read(char* buf, size_t len) {
   const int MAX_COMPLETIONS = 16;
   ibv_wc wc[MAX_COMPLETIONS];
 
-  int tried = 0;
-again:
-  ++tried;
-  int n = rx_cq->poll_cq(MAX_COMPLETIONS, wc);
-  if(n) {
-    ldout(cct, 20) << __func__ << " got " << n << " cqe." << " tried: " << tried << " id: " << read_counter << dendl;
-    rearmed = true;
-  }
+  int n = get_cq_entries(wc, MAX_COMPLETIONS);
   for(int i=0;i<n;++i){
     ibv_wc* response = &wc[i];
     ldout(cct, 20) << __func__ << " cqe  " << response->byte_len << " bytes." << dendl;
@@ -141,12 +153,9 @@ again:
     }
   }
 
-  if(n == 0 && tried < max_try_times)
-    goto again;
-  if (n == MAX_COMPLETIONS)
-    goto again;
 
   rx_cq->rearm_notify();
+  ldout(cct, 20) << __func__ << " done rearm." << dendl;
   gettimeofday(&end,NULL);
   double usec = (end.tv_sec - start.tv_sec) * 1000000 + (end.tv_usec - start.tv_usec);
   ldout(cct, 20) << __func__ << " benchmark time: " << usec << " id: " << read_counter << " , got event: " << got_event << ", tried: " << tried  << dendl;
@@ -180,7 +189,53 @@ ssize_t RDMAConnectedSocketImpl::read_buffers(char* buf, size_t len) {
 }
 
 ssize_t RDMAConnectedSocketImpl::zero_copy_read(bufferptr &data) {
-  return 0;
+  ssize_t size = 0;
+  const int MAX_COMPLETIONS = 16;
+  ibv_wc wc[MAX_COMPLETIONS];
+
+  int n = get_cq_entries(wc, MAX_COMPLETIONS);
+
+  ibv_wc*  response;
+  Chunk* chunk;
+
+  bool loaded = false;
+  auto iter = buffers.begin();
+  if(iter != buffers.end()) {
+    chunk = *iter;
+    if(chunk->bound == 0) {
+      wait_close = true;
+      return 0;
+    }
+    ldout(cct, 20) << __func__ << " chunk:" << chunk->id << dendl; 
+    auto del = std::bind(&Chunk::post_srq, std::move(chunk));
+    data = buffer::claim_buffer(chunk->bound, chunk->buffer, make_deleter(std::move(del)));
+    buffers.erase(iter);
+    loaded = true;
+    size = chunk->bound;
+  }
+
+  for(int i = 0; i < n; ++i) {
+    response = &wc[i];
+    chunk = reinterpret_cast<Chunk*>(response->wr_id);
+    chunk->prepare_read(response->byte_len);
+    if(!loaded && i == 0) {
+      if(chunk->bound == 0) {
+        wait_close = false;
+        return 0;  
+      }
+      ldout(cct, 20) << __func__ << " chunk:" << chunk->id << dendl; 
+      auto del = std::bind(&Chunk::post_srq, std::move(chunk));
+      data = buffer::claim_buffer(chunk->bound, chunk->buffer, make_deleter(std::move(del)));
+      size = chunk->bound;
+      continue;
+    }
+    buffers.push_back(chunk);
+  }
+
+  rx_cq->rearm_notify();
+  if(!rearmed && size == 0)
+    return -EAGAIN;
+  return size;
 }
 
 ssize_t RDMAConnectedSocketImpl::send(bufferlist &bl, bool more) {

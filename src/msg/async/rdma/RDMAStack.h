@@ -38,7 +38,7 @@ class RDMAWorker : public Worker {
   virtual int connect(const entity_addr_t &addr, const SocketOptions &opts, ConnectedSocket *socket) override;
   void connect(const entity_addr_t &peer_addr);
   void initialize();
-  virtual void destroy() {
+  virtual void destroy() override{
     tx_cc->ack_events();
     delete tx_cq;
     lderr(cct) << __func__ << " AAA destroying." << dendl;
@@ -84,9 +84,12 @@ class RDMAConnectedSocketImpl : public ConnectedSocketImpl {
   int read_counter;
   static int globe_seq;
   int my_seq;
+  bool rearmed;
+  bool got_event;
+  int tried;
 
   public:
-  RDMAConnectedSocketImpl(CephContext *cct, Infiniband* ib, RDMAWorker* w, IBSYNMsg im = IBSYNMsg()) : cct(cct), peer_msg(im), infiniband(ib), worker(w), wait_close(false) {
+  RDMAConnectedSocketImpl(CephContext *cct, Infiniband* ib, RDMAWorker* w, IBSYNMsg im = IBSYNMsg()) : cct(cct), peer_msg(im), infiniband(ib), worker(w), wait_close(false), rearmed(false) {
     qp = infiniband->create_queue_pair(IBV_QPT_RC);
     rx_cq = qp->get_rx_cq();
     rx_cc = rx_cq->get_cc();
@@ -138,6 +141,7 @@ class RDMAConnectedSocketImpl : public ConnectedSocketImpl {
   void set_peer_msg(IBSYNMsg m) { peer_msg = m ;}
   void post_work_request(vector<Chunk*>);
   void fin();
+  int get_cq_entries(ibv_wc* wc, int MAX_COMPLETIONS);
 };
 
 class RDMAServerSocketImpl : public ServerSocketImpl {
@@ -169,7 +173,7 @@ class RDMAStack : public NetworkStack {
     return coreids[id % coreids.size()];
   }
 
-  virtual bool support_zero_copy_read() const override { return false; }
+  virtual bool support_zero_copy_read() const override { return true; }
   //virtual bool support_local_listen_table() const { return true; }
 
   virtual void spawn_workers(std::vector<std::function<void ()>> &funcs) override {
@@ -181,6 +185,10 @@ class RDMAStack : public NetworkStack {
     for (auto &&t : threads)
       t.join();
     threads.clear();
+    
+    for(auto &&w: workers)
+       w->destroy();
+
     infiniband->close();
     lderr(cct) << __func__ << " closed." << dendl;
   }

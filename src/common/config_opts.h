@@ -198,6 +198,7 @@ OPTION(ms_dump_on_send, OPT_BOOL, false)           // hexdump msg to log on send
 OPTION(ms_dump_corrupt_message_level, OPT_INT, 1)  // debug level to hexdump undecodeable messages at
 OPTION(ms_async_op_threads, OPT_INT, 3)
 OPTION(ms_async_set_affinity, OPT_BOOL, true)
+OPTION(ms_rdma_buffer_size, OPT_INT, 8192)
 // example: ms_async_affinity_cores = 0,1
 // The number of coreset is expected to equal to ms_async_op_threads, otherwise
 // extra op threads will loop ms_async_affinity_cores again.
