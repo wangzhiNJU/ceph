@@ -35,7 +35,7 @@
 
 #define dout_subsys ceph_subsys_ms
 #undef dout_prefix
-#define dout_prefix *_dout << "posix "
+#define dout_prefix *_dout << "PosixStack "
 
 class PosixConnectedSocketImpl final : public ConnectedSocketImpl {
   NetHandler &handler;
