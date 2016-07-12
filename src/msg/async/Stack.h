@@ -39,6 +39,7 @@ struct SocketOptions {
   bool nonblock = true;
   bool nodelay = true;
   int rcbuf_size = 0;
+  int priority = -1;
 };
 
 /// \cond internal
