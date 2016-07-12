@@ -25,11 +25,10 @@
 #undef dout_prefix
 #define dout_prefix *_dout << "stack "
 
-void NetworkStack::add_thread(unsigned i)
+void NetworkStack::add_thread(unsigned i, std::function<void ()> &thread)
 {
-  assert(threads.size() <= i);
   Worker *w = workers[i];
-  threads.emplace_back(
+  thread = std::move(
     [this, w]() {
       const uint64_t InitEventNumber = 5000;
       const uint64_t EventMaxWaitUs = 30000000;
@@ -69,21 +68,27 @@ Worker* NetworkStack::create_worker(CephContext *c, const string &type, unsigned
 
 NetworkStack::NetworkStack(CephContext *c, const string &t): type(t), started(false), cct(c)
 {
-  for (unsigned i = 0; i < cct->_conf->ms_async_max_op_threads; ++i) {
+  num_workers = cct->_conf->ms_async_op_threads;
+  for (unsigned i = 0; i < num_workers; ++i) {
     Worker *w = create_worker(cct, type, i);
     workers.push_back(w);
   }
-  num_workers = cct->_conf->ms_async_op_threads;
 }
 
 void NetworkStack::start()
 {
-  if (started)
-    return ;
   simple_spin_lock(&pool_spin);
-  for (unsigned i = 0; i < num_workers; ++i)
-    add_thread(i);
-  spawn_workers(threads);
+  if (started) {
+    simple_spin_unlock(&pool_spin);
+    return ;
+  }
+  for (unsigned i = 0; i < num_workers; ++i) {
+    if (workers[i]->is_init())
+      continue;
+    std::function<void ()> thread;
+    add_thread(i, thread);
+    spawn_worker(i, std::move(thread));
+  }
   started = true;
   simple_spin_unlock(&pool_spin);
 
@@ -122,19 +127,20 @@ Worker* NetworkStack::get_worker()
   // TODO: add more logic and heuristics, so connections known to be
   // of light workload (heartbeat service, etc.) won't overshadow
   // heavy workload (clients, etc).
-  if (!current_best || ((threads.size() < (unsigned)cct->_conf->ms_async_max_op_threads)
-      && (min_load > num_workers))) {
-     ldout(cct, 20) << __func__ << " creating worker" << dendl;
-     add_thread(num_workers);
-     spawn_workers(threads);
-     current_best = workers[num_workers++];
-     simple_spin_unlock(&pool_spin);
-     current_best->wait_for_init();
-  } else {
-    simple_spin_unlock(&pool_spin);
-    ldout(cct, 20) << __func__ << " picked " << current_best 
-                   << " as best worker with load " << min_load << dendl;
-  }
+  // if (!current_best || ((num_workers < (unsigned)cct->_conf->ms_async_max_op_threads)
+  //     && (min_load > num_workers))) {
+  //    ldout(cct, 20) << __func__ << " creating worker" << dendl;
+  //    add_thread(num_workers);
+  //    spawn_workers(threads);
+  //    current_best = workers[num_workers++];
+  //    simple_spin_unlock(&pool_spin);
+  //    current_best->wait_for_init();
+  // } else {
+  //   simple_spin_unlock(&pool_spin);
+  //   ldout(cct, 20) << __func__ << " picked " << current_best 
+  //                  << " as best worker with load " << min_load << dendl;
+  // }
+  simple_spin_unlock(&pool_spin);
 
   assert(current_best);
   ++current_best->references;
@@ -147,11 +153,10 @@ void NetworkStack::stop()
   for (unsigned i = 0; i < num_workers; ++i) {
     workers[i]->done = true;
     workers[i]->center.wakeup();
+    join_worker(i);
   }
-  join_workers();
-  threads.clear();
-  simple_spin_unlock(&pool_spin);
   started = false;
+  simple_spin_unlock(&pool_spin);
 }
 
 class C_barrier : public EventCallback {
