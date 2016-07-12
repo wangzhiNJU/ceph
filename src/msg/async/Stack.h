@@ -267,7 +267,7 @@ class Worker {
   }
 };
 
-class NetworkStack {
+class NetworkStack : public CephContext::ForkWatcher {
   std::string type;
   unsigned num_workers = 0;
   bool started = false;
@@ -309,6 +309,14 @@ class NetworkStack {
   // direct is used in tests only
   virtual void spawn_worker(unsigned i, std::function<void ()> &&) = 0;
   virtual void join_worker(unsigned i) = 0;
+
+  virtual void handle_pre_fork() override {
+    stop();
+  }
+
+  virtual void handle_post_fork() override {
+    start();
+  }
 
  private:
   NetworkStack(const NetworkStack &);
