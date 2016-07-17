@@ -36,15 +36,15 @@ class MessengerClient {
     uint64_t think_time;
     ClientThread *thread;
 
-    public:
+   public:
     ClientDispatcher(uint64_t delay, ClientThread *t): Dispatcher(g_ceph_context), think_time(delay), thread(t) {}
     bool ms_can_fast_dispatch_any() const { return true; }
     bool ms_can_fast_dispatch(Message *m) const {
       switch (m->get_type()) {
-        case CEPH_MSG_OSD_OPREPLY:
-          return true;
-        default:
-          return false;
+      case CEPH_MSG_OSD_OPREPLY:
+        return true;
+      default:
+        return false;
       }
     }
 
@@ -55,8 +55,8 @@ class MessengerClient {
     bool ms_handle_reset(Connection *con) { return true; }
     void ms_handle_remote_reset(Connection *con) {}
     bool ms_verify_authorizer(Connection *con, int peer_type, int protocol,
-        bufferlist& authorizer, bufferlist& authorizer_reply,
-        bool& isvalid, CryptoKey& session_key) {
+                              bufferlist& authorizer, bufferlist& authorizer_reply,
+                              bool& isvalid, CryptoKey& session_key) {
       isvalid = true;
       return true;
     }
@@ -75,23 +75,21 @@ class MessengerClient {
     int ops;
     ClientDispatcher dispatcher;
 
-    public:
+   public:
     Mutex lock;
     Cond cond;
     uint64_t inflight = 0;
 
     ClientThread(Messenger *m, int c, ConnectionRef con, int len, int ops, int think_time_us):
-      msgr(m), concurrent(c), conn(con), client_inc(0), oid("object-name"), oloc(1, 1), msg_len(len), ops(ops),
-      dispatcher(think_time_us, this), lock("MessengerBenchmark::ClientThread::lock") {
-        m->add_dispatcher_head(&dispatcher);
-        bufferptr ptr(msg_len);
-        memset(ptr.c_str(), 0, msg_len);
-        data.append(ptr);
-      }
+        msgr(m), concurrent(c), conn(con), client_inc(0), oid("object-name"), oloc(1, 1), msg_len(len), ops(ops),
+        dispatcher(think_time_us, this), lock("MessengerBenchmark::ClientThread::lock") {
+      m->add_dispatcher_head(&dispatcher);
+      bufferptr ptr(msg_len);
+      memset(ptr.c_str(), 0, msg_len);
+      data.append(ptr);
+    }
     void *entry() {
       lock.Lock();
-      struct timeval start,end;
-      double sum = 0;
       for (int i = 0; i < ops; ++i) {
         if (inflight > uint64_t(concurrent)) {
           cond.Wait(lock);
@@ -99,15 +97,10 @@ class MessengerClient {
         MOSDOp *m = new MOSDOp(client_inc.read(), 0, oid, oloc, pgid, 0, 0, 0);
         m->write(0, msg_len, data);
         inflight++;
-        gettimeofday(&start,NULL);
         conn->send_message(m);
-        gettimeofday(&end,NULL);
         //cerr << __func__ << " send m=" << m << std::endl;
         cerr << __func__ << " ops: " << ops << ", i: " << i << std::endl;
-        sum += (end.tv_sec - start.tv_sec) * 1000000 + (end.tv_usec - start.tv_usec);
       }
-      sum /= ops;
-      cerr << __func__ << " avg is : " << sum << std::endl;
       lock.Unlock();
       msgr->shutdown();
       return 0;
@@ -120,10 +113,10 @@ class MessengerClient {
   vector<Messenger*> msgrs;
   vector<ClientThread*> clients;
 
-  public:
+ public:
   MessengerClient(string t, string addr, int delay):
-    type(t), serveraddr(addr), think_time_us(delay) {
-    }
+      type(t), serveraddr(addr), think_time_us(delay) {
+  }
   ~MessengerClient() {
     for (uint64_t i = 0; i < clients.size(); ++i)
       delete clients[i];
@@ -146,9 +139,7 @@ class MessengerClient {
       clients.push_back(t);
       msgr->start();
     }
-    cerr << __func__ << " before usleep: " << std::endl;
-    usleep(200*1000);
-    cerr << __func__ << " after usleep: " << std::endl;
+    usleep(1000*1000);
   }
   void start() {
     for (uint64_t i = 0; i < clients.size(); ++i)

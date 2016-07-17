@@ -220,7 +220,7 @@ ssize_t RDMAConnectedSocketImpl::zero_copy_read(bufferptr &data) {
     chunk->prepare_read(response->byte_len);
     if(!loaded && i == 0) {
       if(chunk->bound == 0) {
-        wait_close = false;
+        wait_close = true;
         return 0;  
       }
       ldout(cct, 20) << __func__ << " chunk:" << chunk->id << dendl; 
