@@ -113,9 +113,14 @@ class EventCenter {
   CephContext *cct;
   int nevent;
   // Used only to external event
+<<<<<<< HEAD
   pthread_t owner;
   std::mutex external_lock;
   std::atomic_ulong external_num_events;
+=======
+  Mutex external_lock, time_lock;
+  atomic_t external_num_events;
+>>>>>>> Event: remove file_lock
   deque<EventCallbackRef> external_events;
   vector<FileEvent> file_events;
   EventDriver *driver;
@@ -138,6 +143,11 @@ class EventCenter {
  public:
   explicit EventCenter(CephContext *c):
     cct(c), nevent(0),
+<<<<<<< HEAD
+=======
+    external_lock("AsyncMessenger::external_lock"),
+    time_lock("AsyncMessenger::time_lock"),
+>>>>>>> Event: remove file_lock
     external_num_events(0),
     driver(NULL), time_event_next_id(1),
     notify_receive_fd(-1), notify_send_fd(-1), net(c),
