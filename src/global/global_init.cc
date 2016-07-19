@@ -352,14 +352,14 @@ void global_init_daemonize(CephContext *cct)
     return;
 
 #if !defined(_AIX)
-  int ret = daemon(1, 1);
+/*  int ret = daemon(1, 1);
   if (ret) {
     ret = errno;
     derr << "global_init_daemonize: BUG: daemon error: "
 	 << cpp_strerror(ret) << dendl;
     exit(1);
   }
- 
+ */
   global_init_postfork_start(cct);
   global_init_postfork_finish(cct);
 #else

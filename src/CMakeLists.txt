@@ -316,6 +316,7 @@ set(crush_srcs
   crush/crush.c
   crush/hash.c
   crush/CrushWrapper.cc
+  crush/CrushLocation.cc
   crush/CrushCompiler.cc
   crush/CrushTester.cc
   crush/CrushLocation.cc)

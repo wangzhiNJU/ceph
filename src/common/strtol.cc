@@ -191,6 +191,8 @@ template long long strict_si_cast<long long>(const char *str, std::string *err);
 template uint64_t strict_si_cast<uint64_t>(const char *str, std::string *err);
 template uint32_t strict_si_cast<uint32_t>(const char *str, std::string *err);
 
+template uint32_t strict_si_cast<uint32_t>(const char *str, std::string *err);
+
 uint64_t strict_sistrtoll(const char *str, std::string *err)
 {
   return strict_si_cast<uint64_t>(str, err);
