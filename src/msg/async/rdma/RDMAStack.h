@@ -21,7 +21,6 @@ class RDMAWorker : public Worker {
   CompletionChannel* tx_cc;
   EventCallbackRef tx_handler;
   MemoryManager* memory_manager;
-  bool rearmed;
   vector<RDMAConnectedSocketImpl*> to_delete;
   class C_handle_cq_tx : public EventCallback {
     RDMAWorker *worker;
@@ -33,7 +32,7 @@ class RDMAWorker : public Worker {
   };
 
   public:
-  explicit RDMAWorker(CephContext *c, unsigned i): Worker(c, i), infiniband(NULL), tx_handler(new C_handle_cq_tx(this))  {}
+  explicit RDMAWorker(CephContext *c, unsigned i): Worker(c, i), infiniband(NULL), tx_handler(new C_handle_cq_tx(this)) {}
 
   virtual int listen(entity_addr_t &addr, const SocketOptions &opts, ServerSocket *) override;
   virtual int connect(const entity_addr_t &addr, const SocketOptions &opts, ConnectedSocket *socket) override;
@@ -51,13 +50,18 @@ class RDMAWorker : public Worker {
   void handle_tx_event();
   CompletionQueue* get_tx_cq() { return tx_cq; }
   void remove_to_delete(RDMAConnectedSocketImpl* csi) {
-    auto iter = to_delete.begin();
+    if(to_delete.empty())
+      return ;
+    vector<RDMAConnectedSocketImpl*>::iterator iter = to_delete.begin();
     for(; iter != to_delete.end(); ++iter) {
       if(csi == *iter) {
         to_delete.erase(iter);  
       }
     }
 
+  }
+  void add_to_delete(RDMAConnectedSocketImpl* csi) {
+    to_delete.push_back(csi);  
   }
 };
 
@@ -96,8 +100,10 @@ class RDMAConnectedSocketImpl : public ConnectedSocketImpl {
   virtual ssize_t zero_copy_read(bufferptr &data) override;
   virtual ssize_t send(bufferlist &bl, bool more) override;
   virtual void shutdown() override {
-    if(!wait_close)
+    if(!wait_close){
       fin();
+      worker->add_to_delete(this);
+    }
     else clear_all();
   }
   virtual void close() override {
@@ -114,7 +120,8 @@ class RDMAConnectedSocketImpl : public ConnectedSocketImpl {
     rx_cc->ack_events();
     delete rx_cq;
     rx_cq = NULL;
-    worker->remove_to_delete(this);
+    if(!wait_close)
+      worker->remove_to_delete(this);
     lderr(cct) << __func__ << dendl;
   }
   int activate();
@@ -156,7 +163,7 @@ class RDMAStack : public NetworkStack {
     return coreids[id % coreids.size()];
   }
 
-  virtual bool support_zero_copy_read() const override { return true; }
+  virtual bool support_zero_copy_read() const override { return false; }
   //virtual bool support_local_listen_table() const { return true; }
 
   virtual void spawn_workers(std::vector<std::function<void ()>> &funcs) override {
