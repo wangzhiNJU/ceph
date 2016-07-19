@@ -10,8 +10,7 @@
 
 DeviceList* ResourceManager::devices;
 Infiniband* Infiniband::ib;
-long Infiniband::send_msg_counter = 0; 
-long Infiniband::read_msg_counter = 0;
+long Infiniband::post_recv_counter = 0; 
 
 int Infiniband::set_nonblocking(int fd)
 {
@@ -163,6 +162,7 @@ int Infiniband::post_chunk(Chunk* chunk){
       << cpp_strerror(errno) << dendl;
     return -1;
   }
+  ++Infiniband::post_recv_counter;
   return 0;
 }
 
