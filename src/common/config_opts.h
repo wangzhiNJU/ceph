@@ -201,6 +201,7 @@ OPTION(ms_async_transport_type, OPT_STR, "posix")
 OPTION(ms_async_op_threads, OPT_U64, 3)            // number of worker processing threads for async messenger created on init
 OPTION(ms_async_max_op_threads, OPT_U64, 5)        // max number of worker processing threads for async messenger
 OPTION(ms_async_set_affinity, OPT_BOOL, true)
+OPTION(ms_rdma_buffer_size, OPT_INT, 8192)
 // example: ms_async_affinity_cores = 0,1
 // The number of coreset is expected to equal to ms_async_op_threads, otherwise
 // extra op threads will loop ms_async_affinity_cores again.
