@@ -432,6 +432,10 @@ set(libcommon_files
   msg/async/net_handler.cc
   ${xio_common_srcs}
   ${dpdk_common_srcs}
+  msg/async/rdma/Infiniband.cc
+  msg/async/rdma/RDMAConnectedSocketImpl.cc
+  msg/async/rdma/RDMAServerSocketImpl.cc
+  msg/async/rdma/RDMAStack.cc
   msg/msg_types.cc
   common/hobject.cc
   osd/OSDMap.cc
@@ -532,7 +536,7 @@ endif(${HAVE_ARMV8_CRC})
 
 add_library(common_utf8 STATIC common/utf8.c)
 
-target_link_libraries(common json_spirit common_utf8 erasure_code rt uuid resolv ${CRYPTO_LIBS} ${Boost_LIBRARIES} ${BLKID_LIBRARIES} ${EXECINFO_LIBRARIES})
+target_link_libraries(common json_spirit common_utf8 erasure_code rt uuid resolv ${CRYPTO_LIBS} ${Boost_LIBRARIES} ${BLKID_LIBRARIES} ${IBVERBS_LIBRARIES} ${EXECINFO_LIBRARIES})
 
 if(${WITH_LTTNG})
   add_subdirectory(tracing)
@@ -578,7 +582,7 @@ if(WITH_LTTNG)
 endif()
 # LINK_PRIVATE instead of PRIVATE is used to backward compatibility with cmake 2.8.11
 target_link_libraries(librados LINK_PRIVATE osdc common cls_lock_client
-  ${BLKID_LIBRARIES} ${CRYPTO_LIBS} ${EXTRALIBS})
+  ${BLKID_LIBRARIES} ${IBVERBS_LIBRARIES} ${CRYPTO_LIBS} ${EXTRALIBS})
 if(ENABLE_SHARED)
   set_target_properties(librados PROPERTIES
     OUTPUT_NAME rados
@@ -648,7 +652,7 @@ set(rados_srcs
   tools/rados/PoolDump.cc
   common/obj_bencher.cc)
 add_executable(rados ${rados_srcs})
-target_link_libraries(rados librados global ${BLKID_LIBRARIES} ${CMAKE_DL_LIBS} radosstriper)
+target_link_libraries(rados librados global ${BLKID_LIBRARIES} ${IBVERBS_LIBRARIES} ${CMAKE_DL_LIBS} radosstriper)
 
 if (WITH_CEPHFS)
   set(cephfs_journal_tool_srcs
@@ -663,7 +667,7 @@ if (WITH_CEPHFS)
     tools/cephfs/MDSUtility.cc)
   add_executable(cephfs-journal-tool ${cephfs_journal_tool_srcs})
   target_link_libraries(cephfs-journal-tool librados mds osdc global
-                        ${BLKID_LIBRARIES} ${CMAKE_DL_LIBS})
+                        ${BLKID_LIBRARIES} ${IBVERBS_LIBRARIES} ${CMAKE_DL_LIBS})
 
   set(cephfs_table_tool_srcs
     tools/cephfs/cephfs-table-tool.cc
@@ -672,7 +676,7 @@ if (WITH_CEPHFS)
     tools/cephfs/MDSUtility.cc)
   add_executable(cephfs-table-tool ${cephfs_table_tool_srcs})
   target_link_libraries(cephfs-table-tool librados mds osdc global
-                        ${BLKID_LIBRARIES} ${CMAKE_DL_LIBS})
+                        ${BLKID_LIBRARIES} ${IBVERBS_LIBRARIES} ${CMAKE_DL_LIBS})
 
   set(cephfs_data_scan_srcs
     tools/cephfs/cephfs-data-scan.cc
@@ -682,7 +686,7 @@ if (WITH_CEPHFS)
   add_executable(cephfs-data-scan ${cephfs_data_scan_srcs})
   target_link_libraries(cephfs-data-scan librados mds osdc global
     cls_cephfs_client
-    ${BLKID_LIBRARIES} ${CMAKE_DL_LIBS})
+    ${BLKID_LIBRARIES} ${IBVERBS_LIBRARIES} ${CMAKE_DL_LIBS})
 
   install(TARGETS
     cephfs-journal-tool
@@ -694,7 +698,7 @@ endif (WITH_CEPHFS)
 set(librados_config_srcs
   librados-config.cc)
 add_executable(librados-config ${librados_config_srcs})
-target_link_libraries(librados-config librados global ${BLKID_LIBRARIES}
+target_link_libraries(librados-config librados global ${BLKID_LIBRARIES} ${IBVERBS_LIBRARIES}
   ${CMAKE_DL_LIBS})
 
 install(TARGETS rados librados-config DESTINATION bin)
@@ -767,6 +771,7 @@ target_link_libraries(ceph-dencoder
   cls_journal_client
   cls_timeindex_client
   blkid
+  ibverbs
   udev
   keyutils
   rbd_replay
@@ -977,7 +982,7 @@ set(ceph_osd_srcs
 add_executable(ceph-osd ${ceph_osd_srcs}
   $<TARGET_OBJECTS:common_util_obj>)
 add_dependencies(ceph-osd erasure_code_plugins)
-target_link_libraries(ceph-osd osd os global ${BLKID_LIBRARIES})
+target_link_libraries(ceph-osd osd os global ${BLKID_LIBRARIES} ${IBVERBS_LIBRARIES})
 if(${HAVE_LIBFUSE})
   target_link_libraries(ceph-osd ${FUSE_LIBRARIES})
 endif(${HAVE_LIBFUSE})
@@ -1328,7 +1333,7 @@ if(${WITH_RBD})
   set_target_properties(rbd PROPERTIES OUTPUT_NAME rbd)
   target_link_libraries(rbd librbd librados global common keyutils udev
     ${Boost_REGEX_LIBRARY} ${Boost_PROGRAM_OPTIONS_LIBRARY}
-    ${BLKID_LIBRARIES} ${CMAKE_DL_LIBS})
+    ${BLKID_LIBRARIES} ${IBVERBS_LIBRARIES} ${CMAKE_DL_LIBS})
   install(TARGETS rbd rbd-nbd rbd-mirror DESTINATION bin)
   install(PROGRAMS
     ${CMAKE_SOURCE_DIR}/src/ceph-rbdnamer
@@ -1489,7 +1494,7 @@ if(${WITH_RADOSGW})
     cls_rgw_client cls_lock_client cls_refcount_client
     cls_log_client cls_statelog_client cls_timeindex_client
     cls_version_client cls_replica_log_client cls_user_client
-    curl expat global fcgi resolv ${SSL_LIBRARIES} ${BLKID_LIBRARIES}
+    curl expat global fcgi resolv ${SSL_LIBRARIES} ${BLKID_LIBRARIES} ${IBVERBS_LIBRARIES}
     ${ALLOC_LIBS})
   # radosgw depends on cls libraries at runtime, but not as link dependencies
   add_dependencies(radosgw cls_rgw cls_lock cls_refcount
@@ -1502,7 +1507,7 @@ if(${WITH_RADOSGW})
     cls_rgw_client cls_lock_client cls_refcount_client
     cls_log_client cls_statelog_client cls_timeindex_client
     cls_version_client cls_replica_log_client cls_user_client
-    curl expat global fcgi resolv ${SSL_LIBRARIES} ${BLKID_LIBRARIES})
+    curl expat global fcgi resolv ${SSL_LIBRARIES} ${BLKID_LIBRARIES} ${IBVERBS_LIBRARIES})
 
   install(TARGETS radosgw-admin DESTINATION bin)
 
