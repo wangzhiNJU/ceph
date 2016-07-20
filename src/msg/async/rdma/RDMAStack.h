@@ -21,7 +21,6 @@ class RDMAWorker : public Worker {
   CompletionChannel* tx_cc;
   EventCallbackRef tx_handler;
   MemoryManager* memory_manager;
-  bool rearmed;
   vector<RDMAConnectedSocketImpl*> to_delete;
   class C_handle_cq_tx : public EventCallback {
     RDMAWorker *worker;
@@ -33,13 +32,13 @@ class RDMAWorker : public Worker {
   };
 
   public:
-  explicit RDMAWorker(CephContext *c, unsigned i): Worker(c, i), infiniband(NULL), tx_handler(new C_handle_cq_tx(this))  {}
+  explicit RDMAWorker(CephContext *c, unsigned i): Worker(c, i), infiniband(NULL), tx_handler(new C_handle_cq_tx(this)) {}
 
   virtual int listen(entity_addr_t &addr, const SocketOptions &opts, ServerSocket *) override;
   virtual int connect(const entity_addr_t &addr, const SocketOptions &opts, ConnectedSocket *socket) override;
   void connect(const entity_addr_t &peer_addr);
   void initialize();
-  virtual void destroy() {
+  virtual void destroy() override{
     tx_cc->ack_events();
     delete tx_cq;
     lderr(cct) << __func__ << " AAA destroying." << dendl;
@@ -51,13 +50,18 @@ class RDMAWorker : public Worker {
   void handle_tx_event();
   CompletionQueue* get_tx_cq() { return tx_cq; }
   void remove_to_delete(RDMAConnectedSocketImpl* csi) {
-    auto iter = to_delete.begin();
+    if(to_delete.empty())
+      return ;
+    vector<RDMAConnectedSocketImpl*>::iterator iter = to_delete.begin();
     for(; iter != to_delete.end(); ++iter) {
       if(csi == *iter) {
         to_delete.erase(iter);  
       }
     }
 
+  }
+  void add_to_delete(RDMAConnectedSocketImpl* csi) {
+    to_delete.push_back(csi);  
   }
 };
 
@@ -76,10 +80,16 @@ class RDMAConnectedSocketImpl : public ConnectedSocketImpl {
   CompletionChannel* rx_cc;
   CompletionQueue* rx_cq;
   bool wait_close;
-
+  int send_counter;
+  int read_counter;
+  static int globe_seq;
+  int my_seq;
+  bool rearmed;
+  bool got_event;
+  int tried;
 
   public:
-  RDMAConnectedSocketImpl(CephContext *cct, Infiniband* ib, RDMAWorker* w, IBSYNMsg im = IBSYNMsg()) : cct(cct), peer_msg(im), infiniband(ib), worker(w), wait_close(false) {
+  RDMAConnectedSocketImpl(CephContext *cct, Infiniband* ib, RDMAWorker* w, IBSYNMsg im = IBSYNMsg()) : cct(cct), peer_msg(im), infiniband(ib), worker(w), wait_close(false), rearmed(false) {
     qp = infiniband->create_queue_pair(IBV_QPT_RC);
     rx_cq = qp->get_rx_cq();
     rx_cc = rx_cq->get_cc();
@@ -87,6 +97,9 @@ class RDMAConnectedSocketImpl : public ConnectedSocketImpl {
     my_msg.psn = qp->get_initial_psn();
     my_msg.lid = infiniband->get_lid();
     my_msg.gid = infiniband->get_gid();
+    send_counter = 0;
+    read_counter = 0;
+    my_seq = ++globe_seq;
   }
 
   virtual int is_connected() override {
@@ -96,8 +109,10 @@ class RDMAConnectedSocketImpl : public ConnectedSocketImpl {
   virtual ssize_t zero_copy_read(bufferptr &data) override;
   virtual ssize_t send(bufferlist &bl, bool more) override;
   virtual void shutdown() override {
-    if(!wait_close)
+    if(!wait_close){
       fin();
+      worker->add_to_delete(this);
+    }
     else clear_all();
   }
   virtual void close() override {
@@ -114,8 +129,9 @@ class RDMAConnectedSocketImpl : public ConnectedSocketImpl {
     rx_cc->ack_events();
     delete rx_cq;
     rx_cq = NULL;
-    worker->remove_to_delete(this);
-    lderr(cct) << __func__ << dendl;
+    if(!wait_close)
+      worker->remove_to_delete(this);
+    lderr(cct) << __func__ << " chunk: " << Infiniband::post_recv_counter  << dendl;
   }
   int activate();
   ssize_t read_buffers(char* buf, size_t len);
@@ -125,6 +141,7 @@ class RDMAConnectedSocketImpl : public ConnectedSocketImpl {
   void set_peer_msg(IBSYNMsg m) { peer_msg = m ;}
   void post_work_request(vector<Chunk*>);
   void fin();
+  int get_cq_entries(ibv_wc* wc, int MAX_COMPLETIONS);
 };
 
 class RDMAServerSocketImpl : public ServerSocketImpl {
@@ -168,6 +185,10 @@ class RDMAStack : public NetworkStack {
     for (auto &&t : threads)
       t.join();
     threads.clear();
+    
+    for(auto &&w: workers)
+       w->destroy();
+
     infiniband->close();
     lderr(cct) << __func__ << " closed." << dendl;
   }

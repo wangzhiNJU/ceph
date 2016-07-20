@@ -30,7 +30,7 @@ int RDMAServerSocketImpl::listen(entity_addr_t &sa, const SocketOptions &opt) {
     goto err;
   }
 
-  /*int flags;
+  int flags;
   if ((flags = fcntl(server_setup_socket, F_GETFL)) < 0 ) {
     lderr(cct) << __func__ << " fcntl(F_GETFL) failed: %s" << cpp_strerror(errno) << dendl;
     return -errno;
@@ -38,7 +38,7 @@ int RDMAServerSocketImpl::listen(entity_addr_t &sa, const SocketOptions &opt) {
   if (fcntl(server_setup_socket, F_SETFL, flags | O_NONBLOCK) < 0) {
     lderr(cct) << __func__ << " fcntl(F_SETFL,O_NONBLOCK): %s" << cpp_strerror(errno) << dendl;
     return -errno;
-  }*/
+  }
 
   ldout(cct, 20) << __func__ << " bind to " << sa.ss_addr() << " on port " << sa.get_port()  << dendl;
   return 0;
@@ -62,6 +62,7 @@ int RDMAServerSocketImpl::accept(ConnectedSocket *sock, const SocketOptions &opt
       ldout(cct, 0) << __func__ << " recv msg failed." << dendl;
       break;
     } else if (r > 0) {
+      ldout(cct, 0) << __func__ << " recv msg not whole." << dendl;
       continue;
     } else {
       //RDMAWorker* w = static_cast<RDMAWorker*>(infiniband->stack->get_worker());

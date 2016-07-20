@@ -99,6 +99,7 @@ class MessengerClient {
         inflight++;
         conn->send_message(m);
         //cerr << __func__ << " send m=" << m << std::endl;
+        cerr << __func__ << " ops: " << ops << ", i: " << i << std::endl;
       }
       lock.Unlock();
       msgr->shutdown();

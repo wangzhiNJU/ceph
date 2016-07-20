@@ -101,14 +101,16 @@ ostream& EventCenter::_event_prefix(std::ostream *_dout)
                 << " time_id=" << time_event_next_id << ").";
 }
 
-thread_local unsigned EventCenter::local_id = 10000;
+EventCenter *EventCenter::centers[24];
+thread_local EventCenter* local_center = nullptr;
 
 int EventCenter::init(int n, unsigned idx)
 {
   // can't init multi times
   assert(nevent == 0);
 
-  local_id = id = idx;
+  id = idx;
+  centers[id] = local_center = this;
 
   driver = nullptr;
   if (cct->_conf->ms_async_transport_type == "dpdk") {
@@ -167,15 +169,7 @@ int EventCenter::init(int n, unsigned idx)
 
 EventCenter::~EventCenter()
 {
-  {
-    std::lock_guard<std::mutex> l(external_lock);
-    while (!external_events.empty()) {
-      EventCallbackRef e = external_events.front();
-      if (e)
-        e->do_request(0);
-      external_events.pop_front();
-    }
-  }
+  assert(external_events.empty());
   assert(time_events.empty());
 
   if (notify_receive_fd >= 0)
@@ -272,20 +266,7 @@ uint64_t EventCenter::create_time_event(uint64_t microseconds, EventCallbackRef 
 
   ldout(cct, 10) << __func__ << " id=" << id << " trigger after " << microseconds << "us"<< dendl;
   EventCenter::TimeEvent event;
-  utime_t expire;
-  struct timeval tv;
-
-  if (microseconds < 5) {
-    tv.tv_sec = 0;
-    tv.tv_usec = microseconds;
-  } else {
-    expire = ceph_clock_now(cct);
-    expire.copy_to_timeval(&tv);
-    tv.tv_sec += microseconds / 1000000;
-    tv.tv_usec += microseconds % 1000000;
-  }
-  expire.set_from_timeval(&tv);
-
+  clock_type::time_point expire = clock_type::now() + std::chrono::microseconds(microseconds);
   event.id = id;
   event.time_cb = ctxt;
   time_events[expire].push_back(event);
@@ -303,8 +284,7 @@ void EventCenter::delete_time_event(uint64_t id)
   if (id >= time_event_next_id)
     return ;
 
-  for (map<utime_t, list<TimeEvent> >::iterator it = time_events.begin();
-       it != time_events.end(); ++it) {
+  for (auto it = time_events.begin(); it != time_events.end(); ++it) {
     for (list<TimeEvent>::iterator j = it->second.begin();
          j != it->second.end(); ++j) {
       if (j->id == id) {
@@ -337,9 +317,8 @@ void EventCenter::wakeup()
 int EventCenter::process_time_events()
 {
   int processed = 0;
-  time_t now = time(NULL);
-  utime_t cur = ceph_clock_now(cct);
-  ldout(cct, 10) << __func__ << " cur time is " << cur << dendl;
+  clock_type::time_point now = clock_type::now();
+  ldout(cct, 10) << __func__ << " cur time is " << now << dendl;
 
   /* If the system clock is moved to the future, and then set back to the
    * right value, time events may be delayed in a random way. Often this
@@ -349,35 +328,26 @@ int EventCenter::process_time_events()
    * events to be processed ASAP when this happens: the idea is that
    * processing events earlier is less dangerous than delaying them
    * indefinitely, and practice suggests it is. */
-  if (now < last_time) {
-    map<utime_t, list<TimeEvent> > changed;
-    for (map<utime_t, list<TimeEvent> >::iterator it = time_events.begin();
-         it != time_events.end(); ++it) {
-      changed[utime_t()].swap(it->second);
-    }
-    time_events.swap(changed);
-  }
+  bool clock_skewed = now < last_time;
   last_time = now;
 
-  map<utime_t, list<TimeEvent> >::iterator prev;
-  list<TimeEvent> need_process;
-  for (map<utime_t, list<TimeEvent> >::iterator it = time_events.begin();
-       it != time_events.end(); ) {
-    prev = it;
-    if (cur >= it->first) {
-      need_process.splice(need_process.end(), it->second);
-      ++it;
-      time_events.erase(prev);
+  while (!time_events.empty()) {
+    auto it = time_events.begin();
+    if (now >= it->first || clock_skewed) {
+      if (it->second.empty()) {
+        time_events.erase(it);
+      } else {
+        TimeEvent &e = it->second.front();
+        EventCallbackRef cb = e.time_cb;
+        uint64_t id = e.id;
+        it->second.pop_front();
+        ldout(cct, 10) << __func__ << " process time event: id=" << id << dendl;
+        processed++;
+        cb->do_request(id);
+      }
     } else {
       break;
     }
-  }
-
-  for (list<TimeEvent>::iterator it = need_process.begin();
-       it != need_process.end(); ++it) {
-    ldout(cct, 10) << __func__ << " process time event: id=" << it->id << dendl;
-    it->time_cb->do_request(it->id);
-    processed++;
   }
 
   return processed;
@@ -388,40 +358,33 @@ int EventCenter::process_events(int timeout_microseconds)
   struct timeval tv;
   int numevents;
   bool trigger_time = false;
-  utime_t now = ceph_clock_now(cct);;
+  auto now = clock_type::now();
 
   bool blocking = pollers.empty() && !external_num_events.load();
+  auto it = time_events.begin();
   // If exists external events or exists poller, don't block
   if (blocking) {
-    utime_t period, shortest;
-    now.copy_to_timeval(&tv);
-    if (timeout_microseconds > 0) {
-      tv.tv_sec += timeout_microseconds / 1000000;
-      tv.tv_usec += timeout_microseconds % 1000000;
-    }
-    shortest.set_from_timeval(&tv);
+    clock_type::time_point shortest;
+    shortest = now + std::chrono::microseconds(timeout_microseconds); 
 
-    map<utime_t, list<TimeEvent> >::iterator it = time_events.begin();
     if (it != time_events.end() && shortest >= it->first) {
       ldout(cct, 10) << __func__ << " shortest is " << shortest << " it->first is " << it->first << dendl;
       shortest = it->first;
       trigger_time = true;
       if (shortest > now) {
-        period = shortest - now;
-        period.copy_to_timeval(&tv);
+        timeout_microseconds = std::chrono::duration_cast<std::chrono::microseconds>(
+            shortest - now).count();
       } else {
-        tv.tv_sec = 0;
-        tv.tv_usec = 0;
+        shortest = now;
+        timeout_microseconds = 0;
       }
-    } else {
-      tv.tv_sec = timeout_microseconds / 1000000;
-      tv.tv_usec = timeout_microseconds % 1000000;
     }
+    tv.tv_sec = timeout_microseconds / 1000000;
+    tv.tv_usec = timeout_microseconds % 1000000;
     next_time = shortest;
     ldout(cct, 10) << __func__ << " wait second " << tv.tv_sec << " usec " << tv.tv_usec << dendl;
     next_time = shortest;
   } else {
-    map<utime_t, list<TimeEvent> >::iterator it = time_events.begin();
     if (it != time_events.end() && now >= it->first)
       trigger_time = true;
     tv.tv_sec = 0;
@@ -475,6 +438,7 @@ int EventCenter::process_events(int timeout_microseconds)
         if (e)
           e->do_request(0);
         cur_process.pop_front();
+        numevents++;
       }
     }
   }
@@ -497,6 +461,6 @@ void EventCenter::dispatch_event_external(EventCallbackRef e)
   external_events.push_back(e);
   ++external_num_events;
   external_lock.unlock();
-  if (local_id != id)
+  if (!in_thread())
     wakeup();
 }

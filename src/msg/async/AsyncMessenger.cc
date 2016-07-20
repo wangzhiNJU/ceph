@@ -82,11 +82,11 @@ int Processor::bind(const entity_addr_t &bind_addr, const set<int>& avoid_ports)
     }
 
     if (listen_addr.get_port()) {
-      worker->center.submit_event([this, &listen_addr, &opts, &r]() {
+      EventCenter::submit_to(worker->center.get_id(), [this, &listen_addr, &opts, &r]() {
         r = worker->listen(listen_addr, opts, &listen_socket);
       });
       if (r < 0) {
-        lderr(msgr->cct) << __func__ << " unable to listen to " << listen_addr.ss_addr()
+        lderr(msgr->cct) << __func__ << " unable to listen to " << listen_addr
                          << ": " << cpp_strerror(r) << dendl;
         continue;
       }
@@ -97,14 +97,14 @@ int Processor::bind(const entity_addr_t &bind_addr, const set<int>& avoid_ports)
           continue;
 
         listen_addr.set_port(port);
-        worker->center.submit_event([this, &listen_addr, &opts, &r]() {
+        EventCenter::submit_to(worker->center.get_id(), [this, &listen_addr, &opts, &r]() {
           r = worker->listen(listen_addr, opts, &listen_socket);
         });
         if (r == 0)
           break;
       }
       if (r < 0) {
-        lderr(msgr->cct) << __func__ << " unable to bind to " << listen_addr.ss_addr()
+        lderr(msgr->cct) << __func__ << " unable to bind to " << listen_addr
                          << " on any port in range " << msgr->cct->_conf->ms_bind_port_min
                          << "-" << msgr->cct->_conf->ms_bind_port_max << ": "
                          << cpp_strerror(r) << dendl;
@@ -167,7 +167,7 @@ int Processor::start()
 
   // start thread
   if (listen_socket) {
-    worker->center.submit_event([this]() {
+    EventCenter::submit_to(worker->center.get_id(), [this]() {
       worker->center.create_file_event(listen_socket.fd(), EVENT_READABLE, listen_handler); });
   }
 
@@ -210,7 +210,7 @@ void Processor::stop()
   ldout(msgr->cct,10) << __func__ << dendl;
 
   if (listen_socket) {
-    worker->center.submit_event([this]() {
+    EventCenter::submit_to(worker->center.get_id(), [this]() {
       worker->center.delete_file_event(listen_socket.fd(), EVENT_READABLE);
       listen_socket.abort_accept();
     });
@@ -247,7 +247,7 @@ AsyncMessenger::AsyncMessenger(CephContext *cct, entity_name_t name,
   cct->lookup_or_create_singleton_object<StackSingleton>(single, uniq_name);
   stack = single->stack;
   Worker *w = stack->get_worker();
-  local_connection = new AsyncConnection(cct, this, w, stack->support_local_listen_table());
+  local_connection = new AsyncConnection(cct, this, w);
   local_worker = w;
   local_features = features;
   init_local_connection();
@@ -404,7 +404,7 @@ AsyncConnectionRef AsyncMessenger::add_accept(Worker *w, ConnectedSocket cli_soc
   lock.Lock();
   if (!stack->support_local_listen_table())
     w = stack->get_worker();
-  AsyncConnectionRef conn = new AsyncConnection(cct, this, w, stack->support_local_listen_table());
+  AsyncConnectionRef conn = new AsyncConnection(cct, this, w);
   conn->accept(std::move(cli_socket), addr);
   accepting_conns.insert(conn);
   lock.Unlock();
@@ -421,7 +421,7 @@ AsyncConnectionRef AsyncMessenger::create_connect(const entity_addr_t& addr, int
 
   // create connection
   Worker *w = stack->get_worker();
-  AsyncConnectionRef conn = new AsyncConnection(cct, this, w, stack->support_local_listen_table());
+  AsyncConnectionRef conn = new AsyncConnection(cct, this, w);
   conn->connect(addr, type);
   assert(!conns.count(addr));
   conns[addr] = conn;

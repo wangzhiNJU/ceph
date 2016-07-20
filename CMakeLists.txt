@@ -156,6 +156,9 @@ if(WITH_SPDK)
   set(HAVE_SPDK TRUE)
 endif(WITH_SPDK)
 
+find_package(ibverbs REQUIRED)
+set(HAVE_LIBIBVERBS ${IBVERBS_FOUND})
+
 find_package(blkid REQUIRED)
 set(HAVE_LIBBLKID ${BLKID_FOUND})
 
