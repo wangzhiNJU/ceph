@@ -38,7 +38,7 @@ class RDMAWorker : public Worker {
   virtual int connect(const entity_addr_t &addr, const SocketOptions &opts, ConnectedSocket *socket) override;
   void connect(const entity_addr_t &peer_addr);
   void initialize();
-  virtual void destroy() {
+  void destroy() {
     tx_cc->ack_events();
     delete tx_cq;
     lderr(cct) << __func__ << " AAA destroying." << dendl;
@@ -80,10 +80,16 @@ class RDMAConnectedSocketImpl : public ConnectedSocketImpl {
   CompletionChannel* rx_cc;
   CompletionQueue* rx_cq;
   bool wait_close;
-
+  int send_counter;
+  int read_counter;
+  static int globe_seq;
+  int my_seq;
+  bool rearmed;
+  bool got_event;
+  int tried;
 
   public:
-  RDMAConnectedSocketImpl(CephContext *cct, Infiniband* ib, RDMAWorker* w, IBSYNMsg im = IBSYNMsg()) : cct(cct), peer_msg(im), infiniband(ib), worker(w), wait_close(false) {
+  RDMAConnectedSocketImpl(CephContext *cct, Infiniband* ib, RDMAWorker* w, IBSYNMsg im = IBSYNMsg()) : cct(cct), peer_msg(im), infiniband(ib), worker(w), wait_close(false), rearmed(false) {
     qp = infiniband->create_queue_pair(IBV_QPT_RC);
     rx_cq = qp->get_rx_cq();
     rx_cc = rx_cq->get_cc();
@@ -91,6 +97,9 @@ class RDMAConnectedSocketImpl : public ConnectedSocketImpl {
     my_msg.psn = qp->get_initial_psn();
     my_msg.lid = infiniband->get_lid();
     my_msg.gid = infiniband->get_gid();
+    send_counter = 0;
+    read_counter = 0;
+    my_seq = ++globe_seq;
   }
 
   virtual int is_connected() override {
@@ -132,6 +141,7 @@ class RDMAConnectedSocketImpl : public ConnectedSocketImpl {
   void set_peer_msg(IBSYNMsg m) { peer_msg = m ;}
   void post_work_request(vector<Chunk*>);
   void fin();
+  int get_cq_entries(ibv_wc* wc, int MAX_COMPLETIONS);
 };
 
 class RDMAServerSocketImpl : public ServerSocketImpl {
@@ -163,20 +173,16 @@ class RDMAStack : public NetworkStack {
     return coreids[id % coreids.size()];
   }
 
-  virtual bool support_zero_copy_read() const override { return false; }
+  virtual bool support_zero_copy_read() const override { return true; }
   //virtual bool support_local_listen_table() const { return true; }
 
-  virtual void spawn_workers(std::vector<std::function<void ()>> &funcs) override {
-    // used to tests
-    for (auto &&func : funcs)
-      threads.emplace_back(std::thread(std::move(func))); // this is happen in actual env
+  virtual void spawn_worker(unsigned i, std::function<void ()> &&func) override {
+    threads.resize(i+1);
+    threads[i] = std::move(std::thread(func));
   }
-  virtual void join_workers() override {
-    for (auto &&t : threads)
-      t.join();
-    threads.clear();
-    infiniband->close();
-    lderr(cct) << __func__ << " closed." << dendl;
+  virtual void join_worker(unsigned i) override {
+    assert(threads.size() > i && threads[i].joinable());
+    threads[i].join();
   }
 };
 #endif

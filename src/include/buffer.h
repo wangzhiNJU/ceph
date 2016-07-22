@@ -352,7 +352,10 @@ namespace buffer CEPH_BUFFER_API {
       iterator(bl_t *l, unsigned o=0);
       iterator(bl_t *l, unsigned o, list_iter_t ip, unsigned po);
 
+      void advance(int o) { advance(static_cast<ssize_t>(o));}
+      void advance(unsigned o) { advance(static_cast<ssize_t>(o));}
       void advance(ssize_t o);
+      void advance(size_t o) { advance(static_cast<ssize_t>(o));}
       void seek(size_t o);
       char operator*();
       iterator& operator++();

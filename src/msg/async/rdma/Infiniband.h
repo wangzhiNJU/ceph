@@ -50,7 +50,7 @@ class Infiniband {
         memory_manager->register_rx_tx(8*1024, 8000, 8000);//
         gettimeofday(&end,NULL);
         float usec = (end.tv_sec - start.tv_sec) * 1000000 + (end.tv_usec - start.tv_usec);
-        lderr(cct) << __func__ << " reg mem time: " << usec << dendl;
+        lderr(cct) << __func__ << " reg mem time: " << usec << ", size: " << cct->_conf->ms_rdma_buffer_size << dendl;
         srq = create_shared_receive_queue(max_recv_wr, max_sge);
         //struct timeval start,end;
         gettimeofday(&start,NULL);
@@ -269,7 +269,9 @@ class Infiniband {
           public:
             Chunk(char* b, uint32_t len, ibv_mr* m) : buffer(b), bytes(len), offset(0), mr(m) {}  
             ~Chunk() {
+              Infiniband* ib = Infiniband::get_infiniband();
               assert(ibv_dereg_mr(mr) == 0);
+              lderr(ib->cct) << __func__ << " ~:" << this << dendl;
             }
 
             void set_offset(uint32_t o) {
@@ -296,8 +298,6 @@ class Infiniband {
             size_t read(char* buf, size_t len) {
               size_t left = bound - offset;
               if(left >= len) {
-                //    CephContext* cct = Infiniband::get_infiniband()->cct;
-                //   lderr(cct) << __func__ << " go to read:" << len << ", offset: " << offset << cpp_strerror(errno) << dendl;
                 memcpy(buf, buffer+offset, len);
                 offset += len;
                 return len;
@@ -312,8 +312,6 @@ class Infiniband {
 
             size_t write(char* buf, size_t len) {
               size_t left = bytes - offset;
-              // CephContext* cct = Infiniband::get_infiniband()->cct;
-              //    lderr(cct) << __func__ << " go to send:" << len << ", left: " << left << cpp_strerror(errno) << dendl;
               if(left >= len) {
                 memcpy(buffer+offset, buf, len);
                 offset += len;
@@ -338,12 +336,19 @@ class Infiniband {
               offset = 0;
               bound = 0;
             }
+
+            void  post_srq() {
+              Infiniband* ib = Infiniband::get_infiniband();
+              ib-> post_chunk(this);
+              lderr(ib->cct) << __func__ << " now you see me:" << id << dendl;
+            }
           public:
             char* buffer;
             uint32_t bytes;
             size_t offset;
             uint32_t bound;
             ibv_mr* mr;
+            int id;
         };
         class Cluster{
           public:
@@ -374,6 +379,7 @@ class Infiniband {
                 ibv_mr* m = ibv_reg_mr(manager.pd->pd, base+offset, chunk_size, IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_LOCAL_WRITE);
                 assert(m);
                 Chunk* c = new Chunk(base+offset,chunk_size,m);
+                c->id = offset;
                 free_chunks.push_back(c);
                 all_chunks.insert(c);
               }
@@ -381,6 +387,7 @@ class Infiniband {
             }
 
             int take_back(Chunk* ck){
+              Mutex::Locker l(lock);
               free_chunks.push_back(ck);
               return 0;
             }
@@ -545,8 +552,7 @@ class Infiniband {
     int close();
 
     //for debug
-    static long send_msg_counter;
-    static long read_msg_counter;
+    static long post_recv_counter;
 };
 
 #endif

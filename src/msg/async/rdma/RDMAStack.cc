@@ -52,7 +52,7 @@ void RDMAWorker::connect(const entity_addr_t &peer_addr) {
   }
 
   int  r;
-  r = ::connect(client_setup_socket, (sockaddr*)(&peer_addr.addr), peer_addr.addr_size());
+  r = ::connect(client_setup_socket, peer_addr.get_sockaddr(), peer_addr.get_sockaddr_len());
   if (r < 0) {
     lderr(cct) << __func__ << " failed to connect " << peer_addr << ": "
       << strerror(errno) << dendl;
@@ -83,7 +83,7 @@ int RDMAWorker::connect(const entity_addr_t &addr, const SocketOptions &opts, Co
   memcpy(&sa, &addr, sizeof(addr));
 
   IBSYNMsg msg = p->get_my_msg();
-  ldout(cct, 20) << __func__ << " connecting to " << sa.ss_addr() << " : " << sa.get_port() << dendl;
+  ldout(cct, 20) << __func__ << " connecting to " << sa.get_sockaddr() << " : " << sa.get_port() << dendl;
   ldout(cct, 20) << __func__ << " my syn msg :  < " << msg.qpn << ", " << msg.psn <<  ", " << msg.lid << ">"<< dendl;
 
   connect(addr);

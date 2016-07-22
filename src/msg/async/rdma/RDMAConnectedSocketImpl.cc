@@ -1,8 +1,11 @@
 #include "RDMAStack.h"
+#include "common/deleter.h"
 
 #define dout_subsys ceph_subsys_ms
 #undef dout_prefix
 #define dout_prefix *_dout << " RDMAConnectedSocketImpl "
+
+int RDMAConnectedSocketImpl::globe_seq = 0;
 
 int RDMAConnectedSocketImpl::activate() {
   ibv_qp_attr qpa;
@@ -80,31 +83,46 @@ int RDMAConnectedSocketImpl::activate() {
   connected = 1;//indicate successfully
   return 0;
 }
+int RDMAConnectedSocketImpl::get_cq_entries(ibv_wc* wc, int MAX_COMPLETIONS) {
+  got_event = rx_cc->get_cq_event();
+  int max_try_times = 3000;
+  if(!got_event)
+    max_try_times >>= 2;
+
+  tried = 0;
+  int n = 0;
+  rearmed = false;
+again:
+  ++tried;
+  n += rx_cq->poll_cq(MAX_COMPLETIONS, wc);
+  if(n) {
+    ldout(cct, 20) << __func__ << " got " << n << " cqe." << " tried: " << tried << " id: " << read_counter << dendl;
+    rearmed = true;
+  }
+  if(n == 0 && tried < max_try_times)
+    goto again;
+  if (n == MAX_COMPLETIONS)
+    goto again;
+
+  return n;
+}
 
 ssize_t RDMAConnectedSocketImpl::read(char* buf, size_t len) {
-  //lderr(cct) << __func__  << " buffers size: " << buffers.size() << " read_counter: " << ++Infiniband::read_msg_counter << " PID:" << getpid() << dendl;
+  ldout(cct, 20) << __func__  << " buffers size: " << buffers.size() << " read_counter: " << ++read_counter << " csi" << my_seq  << dendl;
   ssize_t read = 0;
 
+  ldout(cct, 20) << __func__ << " need to read bytes: " << len  << dendl;
   struct timeval start,end;
   gettimeofday(&start,NULL);
-  ldout(cct, 20) << __func__ << " need to read bytes: " << len  << dendl;
-  bool got_event = rx_cc->get_cq_event();
-  rx_cq->rearm_notify();
 
   if(!buffers.empty()) 
     read = read_buffers(buf,len);
 
 
-  static const int MAX_COMPLETIONS = 16;
-  static ibv_wc wc[MAX_COMPLETIONS];
+  const int MAX_COMPLETIONS = 16;
+  ibv_wc wc[MAX_COMPLETIONS];
 
-  int tried = 0;
-again:
-  ++tried;
-  int n = rx_cq->poll_cq(MAX_COMPLETIONS, wc);
-  if(n)
-    ldout(cct, 20) << __func__ << " got " << n << " cqe." << " tried: " << tried << " id: " << Infiniband::read_msg_counter << dendl;
-
+  int n = get_cq_entries(wc, MAX_COMPLETIONS);
   for(int i=0;i<n;++i){
     ibv_wc* response = &wc[i];
     ldout(cct, 20) << __func__ << " cqe  " << response->byte_len << " bytes." << dendl;
@@ -135,12 +153,14 @@ again:
     }
   }
 
-  if (!n && !read)
-    goto again;
 
+  rx_cq->rearm_notify();
+  ldout(cct, 20) << __func__ << " done rearm." << dendl;
   gettimeofday(&end,NULL);
   double usec = (end.tv_sec - start.tv_sec) * 1000000 + (end.tv_usec - start.tv_usec);
-  ldout(cct, 20) << __func__ << " benchmark time: " << usec << " id: " << Infiniband::read_msg_counter << " , got event: " << got_event << ", tried: " << tried  << dendl;
+  ldout(cct, 20) << __func__ << " benchmark time: " << usec << " id: " << read_counter << " , got event: " << got_event << ", tried: " << tried  << dendl;
+  if(!rearmed && read == 0)
+    return -EAGAIN;
   return read;
 }
 
@@ -150,7 +170,7 @@ ssize_t RDMAConnectedSocketImpl::read_buffers(char* buf, size_t len) {
   for(; c != buffers.end() ; ++c) {
     tmp = (*c)->read(buf+read, len-read);
     read += tmp;
-    ldout(cct, 20) << __func__ << " this iter read: " << tmp << " bytes." << " offset: " << (*c)->get_offset() << " ,bound: " << (*c)->get_bound()  << dendl;
+    ldout(cct, 20) << __func__ << " this iter read: " << tmp << " bytes." << " offset: " << (*c)->get_offset() << " ,bound: " << (*c)->get_bound()  << ". Chunk:" << *c  << dendl;
     if((*c)->over()) {
       assert(infiniband->post_chunk(*c) == 0);
       ldout(cct, 20) << __func__ << " one chunk over." << dendl;
@@ -163,17 +183,63 @@ ssize_t RDMAConnectedSocketImpl::read_buffers(char* buf, size_t len) {
   if(c != buffers.end() && (*c)->over())
     c++;
   //if(c != buffers.begin())
-    buffers.erase(buffers.begin(), c);
+  buffers.erase(buffers.begin(), c);
   ldout(cct, 20) << __func__ << " got " << read << " bytes here. buffers size : " << buffers.size() << dendl;
   return read;
 }
 
 ssize_t RDMAConnectedSocketImpl::zero_copy_read(bufferptr &data) {
-  return 0;
+  ssize_t size = 0;
+  const int MAX_COMPLETIONS = 16;
+  ibv_wc wc[MAX_COMPLETIONS];
+
+  int n = get_cq_entries(wc, MAX_COMPLETIONS);
+
+  ibv_wc*  response;
+  Chunk* chunk;
+
+  bool loaded = false;
+  auto iter = buffers.begin();
+  if(iter != buffers.end()) {
+    chunk = *iter;
+    if(chunk->bound == 0) {
+      wait_close = true;
+      return 0;
+    }
+    ldout(cct, 20) << __func__ << " chunk:" << chunk->id << dendl; 
+    auto del = std::bind(&Chunk::post_srq, std::move(chunk));
+    //data = buffer::claim_buffer(chunk->bound, chunk->buffer, make_deleter(std::move(del)));
+    buffers.erase(iter);
+    loaded = true;
+    size = chunk->bound;
+  }
+
+  for(int i = 0; i < n; ++i) {
+    response = &wc[i];
+    chunk = reinterpret_cast<Chunk*>(response->wr_id);
+    chunk->prepare_read(response->byte_len);
+    if(!loaded && i == 0) {
+      if(chunk->bound == 0) {
+        wait_close = true;
+        return 0;  
+      }
+      ldout(cct, 20) << __func__ << " chunk:" << chunk->id << dendl; 
+      auto del = std::bind(&Chunk::post_srq, std::move(chunk));
+//      data = buffer::claim_buffer(chunk->bound, chunk->buffer, make_deleter(std::move(del)));
+      size = chunk->bound;
+      continue;
+    }
+    buffers.push_back(chunk);
+  }
+
+  rx_cq->rearm_notify();
+  if(!rearmed && size == 0)
+    return -EAGAIN;
+  return size;
 }
 
 ssize_t RDMAConnectedSocketImpl::send(bufferlist &bl, bool more) {
- // lderr(cct) << __func__  << " send_msg_counter: " << ++Infiniband::send_msg_counter << " PID:" <<  getpid()  << dendl;
+  ldout(cct, 20) << __func__  << " send_msg_counter: " << ++send_counter << " csi" << my_seq << dendl;
   struct timeval start,end;
   gettimeofday(&start,NULL);
   ssize_t bytes = 0;//to send
@@ -182,7 +248,6 @@ ssize_t RDMAConnectedSocketImpl::send(bufferlist &bl, bool more) {
     bytes += it->length();
     ++it;
   }
-  //  ldout(cct, 20) << __func__ << " gonna send " << bytes << " bytes." << dendl;
 
   vector<Chunk*> tx_buffers = infiniband->get_tx_buffers(bytes);
   ldout(cct, 20) << __func__ << " tx buffer count: " << tx_buffers.size() << dendl;
@@ -263,11 +328,13 @@ void RDMAConnectedSocketImpl::post_work_request(vector<Chunk*> tx_buffers) {
 }
 
 void RDMAConnectedSocketImpl::fin() {
-  ibv_sge list = {};
+  //ibv_sge list;
+  //memset(&list, 0, sizeof(list));
   ibv_send_wr wr;
+  memset(&wr, 0, sizeof(wr));
   wr.wr_id = reinterpret_cast<uint64_t>(this);
   wr.num_sge = 0;
-  wr.sg_list = &list;
+  //wr.sg_list = &list;
   wr.opcode = IBV_WR_SEND;
   wr.send_flags = IBV_SEND_SIGNALED;
   ibv_send_wr* bad_tx_work_request;

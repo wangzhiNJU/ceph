@@ -6,7 +6,7 @@
 #define dout_subsys ceph_subsys_ms
 #undef dout_prefix
 #define dout_prefix *_dout << "Infiniband "
-
+// lalala
 
 DeviceList* ResourceManager::devices;
 Infiniband* Infiniband::ib;
@@ -73,7 +73,7 @@ Infiniband::create_queue_pair(ibv_qp_type type)
     ldout(cct,20) << __func__ << " failed to create cq, " << " destroy cc result: " << r << dendl;
   }
 
-      RDMAWorker* w = static_cast<RDMAWorker*>(stack->get_worker());
+  RDMAWorker* w = static_cast<RDMAWorker*>(stack->get_worker());
   Infiniband::QueuePair *qp = new QueuePair(*this, type, ib_physical_port, srq, w->get_tx_cq(), cq, max_send_wr, max_recv_wr);
   if (qp->init()) {
     delete qp;
@@ -230,14 +230,11 @@ int Infiniband::recv_udp_msg(int sd, IBSYNMsg& im, entity_addr_t *addr)
   assert(sd >= 0);
   ssize_t r;
   entity_addr_t socket_addr;
-  socklen_t slen = sizeof(socket_addr.ss_addr());
+  struct sockaddr from;
+  socklen_t slen = sizeof(from);
   char msg[sizeof "0000:00000000:00000000:00000000000000000000000000000000"];
   char gid[33];
-  r = ::recvfrom(sd, &msg, sizeof(msg), 0,
-      reinterpret_cast<sockaddr *>(&socket_addr.ss_addr()), &slen);
-  sscanf(msg, "%x:%x:%x:%s", &(im.lid), &(im.qpn), &(im.psn), gid);
-  wire_gid_to_gid(gid, &(im.gid));
-  ldout(cct, 0) << __func__ << " recevd: " << im.lid << ", " << im.qpn << ", " << im.psn << ", " << gid  << dendl;
+  r = ::recvfrom(sd, &msg, sizeof(msg), 0, &from, &slen);
   // Drop incoming qpt
   if (cct->_conf->ms_inject_socket_failures && sd >= 0) {
     if (rand() % cct->_conf->ms_inject_socket_failures == 0) {
@@ -246,20 +243,20 @@ int Infiniband::recv_udp_msg(int sd, IBSYNMsg& im, entity_addr_t *addr)
     }
   }
   if (r == -1) {
-    if (errno == EINTR || errno == EAGAIN) {
-      return 1;
-    } else {
-      lderr(cct) << __func__ << " recv got error " << errno << ": "
-        << cpp_strerror(errno) << dendl;
-      return -1;
-    }
+    lderr(cct) << __func__ << " recv got error " << errno << ": "
+      << cpp_strerror(errno) << dendl;
+    return -1;
   } else if ((size_t)r != sizeof(msg)) { // valid message length
     lderr(cct) << __func__ << " recv got bad length (" << r << ")." << cpp_strerror(errno) << dendl;
     return 1;
   } else { // valid message
+    socket_addr.set_sockaddr(&from);
     if (addr) {
       *addr = socket_addr;
     }
+    sscanf(msg, "%x:%x:%x:%s", &(im.lid), &(im.qpn), &(im.psn), gid);
+    wire_gid_to_gid(gid, &(im.gid));
+    ldout(cct, 0) << __func__ << " recevd: " << im.lid << ", " << im.qpn << ", " << im.psn << ", " << gid  << dendl;
     return 0;
   }
 }
@@ -276,8 +273,8 @@ retry:
   gid_to_wire_gid(&(im.gid), gid);
   sprintf(msg, "%04x:%08x:%08x:%s", im.lid, im.qpn, im.psn, gid);
   ldout(cct, 0) << __func__ << " sending: " << im.lid << ", " << im.qpn << ", " << im.psn << ", " << gid  << dendl;
-  r = ::sendto(sd, msg, sizeof(msg), 0, reinterpret_cast<sockaddr *>(&peeraddr.ss_addr()),
-      sizeof(peeraddr.ss_addr()));
+  r = ::sendto(sd, msg, sizeof(msg), 0, peeraddr.get_sockaddr(),
+      sizeof(peeraddr.get_sockaddr()));
   // Drop incoming qpt
   if (cct->_conf->ms_inject_socket_failures && sd >= 0) {
     if (rand() % cct->_conf->ms_inject_socket_failures == 0) {
@@ -370,7 +367,7 @@ int Infiniband::CompletionQueue::poll_cq(int num_entries, ibv_wc *ret_wc_array) 
 
 bool Infiniband::CompletionChannel::get_cq_event()
 {
-//  ldout(infiniband.cct, 21) << __func__ << " started." << dendl;
+  //  ldout(infiniband.cct, 21) << __func__ << " started." << dendl;
   ibv_cq *cq = NULL;
   void *ev_ctx;
   if (ibv_get_cq_event(channel, &cq, &ev_ctx)) {
