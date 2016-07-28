@@ -340,7 +340,6 @@ class Infiniband {
             void  post_srq() {
               Infiniband* ib = Infiniband::get_infiniband();
               ib-> post_chunk(this);
-              lderr(ib->cct) << __func__ << " now you see me:" << id << dendl;
             }
           public:
             char* buffer;

@@ -139,7 +139,7 @@ class MessengerClient {
       clients.push_back(t);
       msgr->start();
     }
-    usleep(1000*1000);
+  //  usleep(1000*1000);
   }
   void start() {
     for (uint64_t i = 0; i < clients.size(); ++i)

@@ -130,6 +130,7 @@ RDMAStack::RDMAStack(CephContext *cct, const string &t): NetworkStack(cct, t), i
   for (vector<Worker*>::iterator it = workers.begin(); it != workers.end(); ++it) {
     (static_cast<RDMAWorker*>(*it))->set_ib(infiniband);
   }
+  poller = new Poller(cct, infiniband);
 }
 
 void RDMAWorker::initialize() { 
@@ -170,12 +171,68 @@ again:
   if (n == MAX_COMPLETIONS)
     goto again;
 
-  /*if (!rearmed) {
-    tx_cq->rearm_notify();
-    rearmed = true;
-  // Clean up cq events after rearm notify ensure no new incoming event
-  //     // arrived between polling and rearm
-  goto again;
-  }*/
   ldout(cct, 20) << __func__ << " leaving handle_tx_event. " << dendl;
 }
+
+void Poller::polling() {
+  assert(ib);
+  rx_cc = ib->create_comp_channel();
+  assert(rx_cc);
+  rx_cq = ib->create_comp_queue(rx_cc);
+  assert(rx_cq->get_cq());
+  ldout(cct, 20) << __func__ << " this:" << this << " rx_cc: " << rx_cc << " rx_cq: " << rx_cq << dendl;
+  ldout(cct, 20) << __func__ << " cq: " << rx_cq->get_cq() << dendl;
+  assert(rx_cq->get_cq());
+  int MAX_COMPLETIONS = 32;
+  ibv_wc wc[MAX_COMPLETIONS];
+
+  try{
+    set<uint32_t> wakeup;
+    while(!done) {
+      int n = rx_cq->poll_cq(MAX_COMPLETIONS, wc);
+      /*if(p % 8888 == 0) {
+        std::chrono::milliseconds dura(100);
+        std::this_thread::sleep_for(dura);  
+      }*/
+      if(n == 0)
+        continue;
+
+      for(int i=0;i<n;++i) {
+        wakeup.insert(wc[i].qp_num);
+        if(deliver.count(wc[i].qp_num) == 0) {
+          vector<ibv_wc>* v = new vector<ibv_wc>();
+          v->push_back(wc[i]);
+          deliver[wc[i].qp_num] = v;
+          ldout(cct, 20) << __func__ << " qp:" << wc[i].qp_num << ", v:" << v << ", deliever size:" << deliver.size() << dendl;
+          auto i = deliver.begin();
+          ldout(cct, 20) << __func__ << " qp:" << i->first << ", csi:" << members[i->first] << ", deliver size:" << deliver.size() << dendl;
+        }
+        else {
+          deliver[wc[i].qp_num]->push_back(wc[i]);    
+        }
+      }
+      auto it = deliver.begin();
+      while(it != deliver.end()) {
+        ldout(cct, 20) << __func__ << " qp:" << it->first << ", csi:" << members[it->first] << ", deliver size:" << deliver.size() << dendl;
+        members[it->first]->pass_wc(it->second);  
+        ++it;
+      }
+
+      auto iter = wakeup.begin();
+      char buf[1];
+      buf[0] = 'c';
+      while(iter != wakeup.end()) {
+        int fd = book[*iter];  
+        assert(fd > 0);
+        assert(write(fd, buf, 1) == 1);
+        ldout(cct, 20) << __func__ << " wakeup qp:" << *iter << dendl;
+        ++iter;
+      }
+      wakeup.clear();
+      deliver.clear();
+    }
+  } catch(exception &e) {
+    lderr(cct)  << __func__ << " catch exception " << e.what() << dendl;
+  }
+}
+

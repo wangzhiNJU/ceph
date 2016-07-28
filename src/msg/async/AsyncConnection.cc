@@ -514,6 +514,7 @@ void AsyncConnection::process()
             ldout(async_msgr->cct, 1) << __func__ << " read tag failed" << dendl;
             goto fail;
           } else if (r > 0) {
+            ldout(async_msgr->cct, 20) << __func__ << " break in state:" << get_state_name(state) << dendl;//wangzhi
             break;
           }
 
@@ -963,6 +964,8 @@ void AsyncConnection::process()
           break;
         }
     }
+    ldout(async_msgr->cct, 20) << __func__ << " state:" << get_state_name(state) << ", prev_state:" << get_state_name(prev_state) << dendl;//wangzhi
+    ldout(async_msgr->cct, 20) << __func__ << " state != prev_state:" << (state != prev_state)  << dendl;//wangzhi
   } while (prev_state != state);
 
 #ifdef CEPH_PERF_DEV

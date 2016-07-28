@@ -64,7 +64,79 @@ class RDMAWorker : public Worker {
     to_delete.push_back(csi);  
   }
 };
+class Poller {
+  typedef Infiniband::CompletionQueue CompletionQueue;
+  typedef Infiniband::CompletionChannel CompletionChannel;
+  std::thread t;
+  CephContext *cct;
+  Infiniband* ib;
+  Mutex lock;
+  bool done;
+  map<uint32_t, int> book;
+  map<uint32_t, vector<ibv_wc>* > deliver;
+  map<uint32_t, RDMAConnectedSocketImpl* > members;
+  public:
+  CompletionQueue* rx_cq;           // common completion queue for all transmits
+  CompletionChannel* rx_cc;
+  explicit Poller(CephContext* cct, Infiniband* i) : t(&Poller::polling, this), cct(cct), ib(i), lock("Poller lock"), done(false) {
+  }
 
+  CompletionQueue* get_rx_cq() const {  return rx_cq; }
+  void polling();
+  int register_qp(uint32_t qp_num, RDMAConnectedSocketImpl* csi) {
+    int fds[2];
+    if(pipe(fds) < 0) {
+      lderr(cct) << __func__ << " can't create notify pipe" << dendl;
+      return -1;
+    }
+    Mutex::Locker l(lock);
+    assert(book.count(qp_num) == 0);
+    book[qp_num] = fds[1];
+    members[qp_num] = csi;
+    assert(csi);
+    lderr(cct) << __func__ << " qp_num:" << qp_num << ", csi:" << csi << dendl;
+    return fds[0];
+  }
+  void join() {
+    t.join();  
+  }
+};
+
+class RDMAStack : public NetworkStack {
+  vector<int> coreids;
+  vector<std::thread> threads;
+  Infiniband* infiniband;
+  public:
+  Poller* poller;
+  explicit RDMAStack(CephContext *cct, const string &t);
+
+  int get_cpuid(int id) {
+    if (coreids.empty())
+      return -1;
+    return coreids[id % coreids.size()];
+  }
+
+  virtual bool support_zero_copy_read() const override { return true; }
+  //virtual bool support_local_listen_table() const { return true; }
+
+  virtual void spawn_workers(std::vector<std::function<void ()>> &funcs) override {
+    // used to tests
+    for (auto &&func : funcs)
+      threads.emplace_back(std::thread(std::move(func))); // this is happen in actual env
+  }
+  virtual void join_workers() override {
+    for (auto &&t : threads)
+      t.join();
+    poller->join();
+    threads.clear();
+
+    for(auto &&w: workers)
+      w->destroy();
+
+    infiniband->close();
+    lderr(cct) << __func__ << " closed." << dendl;
+  }
+};
 class RDMAConnectedSocketImpl : public ConnectedSocketImpl {
   typedef Infiniband::MemoryManager::Chunk Chunk;
   typedef Infiniband::CompletionChannel CompletionChannel;
@@ -77,8 +149,6 @@ class RDMAConnectedSocketImpl : public ConnectedSocketImpl {
   Infiniband* infiniband;
   RDMAWorker* worker;
   vector<Chunk*> buffers;
-  CompletionChannel* rx_cc;
-  CompletionQueue* rx_cq;
   bool wait_close;
   int send_counter;
   int read_counter;
@@ -87,12 +157,14 @@ class RDMAConnectedSocketImpl : public ConnectedSocketImpl {
   bool rearmed;
   bool got_event;
   int tried;
-
+  Mutex lock;
+  vector<vector<ibv_wc>* > wc;
+  int notify_fd;
+  CompletionQueue* rx_cq;           // common completion queue for all transmits
+  CompletionChannel* rx_cc;
   public:
-  RDMAConnectedSocketImpl(CephContext *cct, Infiniband* ib, RDMAWorker* w, IBSYNMsg im = IBSYNMsg()) : cct(cct), peer_msg(im), infiniband(ib), worker(w), wait_close(false), rearmed(false) {
+  RDMAConnectedSocketImpl(CephContext *cct, Infiniband* ib, RDMAWorker* w, IBSYNMsg im = IBSYNMsg()) : cct(cct), peer_msg(im), infiniband(ib), worker(w), wait_close(false), rearmed(false), lock("csi-lock") {
     qp = infiniband->create_queue_pair(IBV_QPT_RC);
-    rx_cq = qp->get_rx_cq();
-    rx_cc = rx_cq->get_cc();
     my_msg.qpn = qp->get_local_qp_number();
     my_msg.psn = qp->get_initial_psn();
     my_msg.lid = infiniband->get_lid();
@@ -100,8 +172,22 @@ class RDMAConnectedSocketImpl : public ConnectedSocketImpl {
     send_counter = 0;
     read_counter = 0;
     my_seq = ++globe_seq;
+    notify_fd = infiniband->stack->poller->register_qp(my_msg.qpn, this);
   }
 
+  void pass_wc(vector<ibv_wc>* v) {
+    Mutex::Locker l(lock);
+    wc.push_back(v);
+  }
+  vector<ibv_wc>* get_wc() {
+    Mutex::Locker l(lock);
+    if(wc.empty())
+      return nullptr;
+    auto iter = wc.begin();
+    vector<ibv_wc>* r = *iter;
+    wc.erase(iter);
+    return r;
+  }
   virtual int is_connected() override {
     return connected;
   }
@@ -118,7 +204,7 @@ class RDMAConnectedSocketImpl : public ConnectedSocketImpl {
   virtual void close() override {
   }
   virtual int fd() const override {
-    return rx_cc->get_fd();
+    return notify_fd;
   }
   virtual void set_worker(Worker* w) {
     worker = dynamic_cast<RDMAWorker*>(w);
@@ -126,9 +212,9 @@ class RDMAConnectedSocketImpl : public ConnectedSocketImpl {
   }
   void clear_all() {  
     delete qp;
-    rx_cc->ack_events();
-    delete rx_cq;
-    rx_cq = NULL;
+    //rx_cc->ack_events();
+    //delete rx_cq;
+    //rx_cq = NULL;
     if(!wait_close)
       worker->remove_to_delete(this);
     lderr(cct) << __func__ << " chunk: " << Infiniband::post_recv_counter  << dendl;
@@ -160,37 +246,4 @@ class RDMAServerSocketImpl : public ServerSocketImpl {
 };
 
 
-class RDMAStack : public NetworkStack {
-  vector<int> coreids;
-  vector<std::thread> threads;
-  Infiniband* infiniband;
-  public:
-  explicit RDMAStack(CephContext *cct, const string &t);
-
-  int get_cpuid(int id) {
-    if (coreids.empty())
-      return -1;
-    return coreids[id % coreids.size()];
-  }
-
-  virtual bool support_zero_copy_read() const override { return true; }
-  //virtual bool support_local_listen_table() const { return true; }
-
-  virtual void spawn_workers(std::vector<std::function<void ()>> &funcs) override {
-    // used to tests
-    for (auto &&func : funcs)
-      threads.emplace_back(std::thread(std::move(func))); // this is happen in actual env
-  }
-  virtual void join_workers() override {
-    for (auto &&t : threads)
-      t.join();
-    threads.clear();
-    
-    for(auto &&w: workers)
-       w->destroy();
-
-    infiniband->close();
-    lderr(cct) << __func__ << " closed." << dendl;
-  }
-};
 #endif

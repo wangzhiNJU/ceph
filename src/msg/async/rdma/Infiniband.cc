@@ -63,18 +63,8 @@ ibv_srq* Infiniband::create_shared_receive_queue(uint32_t max_wr, uint32_t max_s
   Infiniband::QueuePair*
 Infiniband::create_queue_pair(ibv_qp_type type)
 {
-  Infiniband::CompletionChannel* cc = create_comp_channel();
-  if (!cc)
-    return NULL;
-
-  Infiniband::CompletionQueue* cq = create_comp_queue(cc);
-  if (!cq) {
-    int r = ibv_destroy_comp_channel(cc->get_channel());
-    ldout(cct,20) << __func__ << " failed to create cq, " << " destroy cc result: " << r << dendl;
-  }
-
   RDMAWorker* w = static_cast<RDMAWorker*>(stack->get_worker());
-  Infiniband::QueuePair *qp = new QueuePair(*this, type, ib_physical_port, srq, w->get_tx_cq(), cq, max_send_wr, max_recv_wr);
+  Infiniband::QueuePair *qp = new QueuePair(*this, type, ib_physical_port, srq, w->get_tx_cq(), stack->poller->get_rx_cq(), max_send_wr, max_recv_wr);
   if (qp->init()) {
     delete qp;
     return NULL;
